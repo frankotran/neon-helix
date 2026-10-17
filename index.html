@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0a0a1a">
 <title>NEON HELIX</title>
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 <div id="game-wrap">
@@ -16,6 +16,7 @@
     <div id="hud-left">
       <div id="hud-score">0</div>
       <div id="hud-level">LEVEL 1</div>
+      <div id="hud-color"><span id="hud-dot"></span><span id="hud-cname">CYAN</span></div>
     </div>
     <div id="hud-right">
       <div id="hud-coins">🪙 <span id="coin-count">0</span></div>
@@ -36,6 +37,7 @@
       </div>
       <button id="btn-levels" class="big-btn">▶ LEVELS</button>
       <button id="btn-endless" class="big-btn alt">∞ ENDLESS</button>
+      <button id="btn-rush" class="big-btn rush">⚡ RUSH <span class="sub">60-second score attack</span></button>
       <div class="menu-row">
         <button id="btn-shop" class="small-btn">🛍 SHOP</button>
         <button id="btn-how" class="small-btn">❓ HOW TO PLAY</button>
@@ -141,6 +143,6 @@
 
   <div id="toast" class="hidden"></div>
 </div>
-<script src="game.js?v=1"></script>
+<script src="game.js?v=2"></script>
 </body>
 </html>

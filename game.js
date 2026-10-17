@@ -12,6 +12,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const rand = (a, b) => a + Math.random() * (b - a);
 const randi = (a, b) => Math.floor(rand(a, b + 1));
 const norm = a => { a %= TAU; if (a > Math.PI) a -= TAU; if (a < -Math.PI) a += TAU; return a; };
+const fmtTime = s => { s = Math.max(0, Math.ceil(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 const angDist = (a, b) => Math.abs(norm(a - b));
 const inArc = (ang, a0, a1) => { // is ang inside [a0,a1] going CCW (all normalized)
   ang = norm(ang); a0 = norm(a0); a1 = norm(a1);
@@ -77,7 +78,7 @@ const Save = {
   defaults() {
     return {
       coins: 0, unlocked: 1,
-      best: { endless: 0, levels: {} },
+      best: { endless: 0, rush: 0, levels: {} },
       balls: { owned: ['orb'], sel: 'orb' },
       trails: { owned: ['none'], sel: 'none' },
       themes: { owned: ['midnight'], sel: 'midnight' },
@@ -165,6 +166,9 @@ const Game = {
   rowIndex: 0,             // highest row passed
   camY: 0, shake: 0, timeScale: 1, slowT: 0,
   shield: 0, revived: false,
+  eColor: 0, eRunLeft: 99,   // endless-mode color run tracking
+  timeLeft: 0,               // rush mode countdown
+  depth: 0,                  // endless/rush: deepest row depth generated
   particles: [], popups: [], stars: [],
   deathCause: '', newBest: false,
   W: 0, H: 0, R: 120, ballScreenY: 0,
@@ -177,7 +181,7 @@ const PHYS = {
   // infinite score farm / softlock. One bounce threatens exactly one row down.
   G: 2800, bounceV: 700, rowSpacing: 112,
   rotSense: 0.011, maxRotVel: 9,
-  gateHalf: 0.52, coinHalf: 0.5
+  gateHalf: 0.78, coinHalf: 0.5 // wide gates: missing a repaint should be rare, not the norm
 };
 
 /* ---------------- Level generation ----------------
@@ -186,10 +190,40 @@ const PHYS = {
    gate always sits in the gap line before a color change. */
 function genLevel(n) {
   const rows = [], gates = [], coins = [];
+  let gapC = rand(0, TAU);
+
+  // Level 1 is a tutorial: neutral rows, then a safe cyan run with a practice
+  // gate, then a real magenta run with a gate, then back to cyan. The color
+  // mechanic is taught in the first 60 seconds instead of hiding in level 2.
+  if (n === 1) {
+    const gapH = 0.55;
+    const segs = [
+      { color: -1, len: 4 },
+      { color: 0, len: 6 },
+      { color: 1, len: 4 },
+      { color: 0, len: 2 }
+    ];
+    let i = 0;
+    for (const s of segs) {
+      let firstGap = gapC;
+      for (let k = 0; k < s.len; k++, i++) {
+        gapC = norm(gapC + rand(-1.2, 1.2));
+        if (k === 0) firstGap = gapC;
+        rows.push({ y: i * PHYS.rowSpacing, gapC, gapH, color: s.color, reds: [] });
+        if (Math.random() < 0.4) coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + rand(-0.5, 0.5)), taken: false });
+      }
+      if (s.color !== -1 && i - s.len > 0) {
+        gates.push({ y: (i - s.len) * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: firstGap, color: s.color, taken: false, warned: false });
+      }
+    }
+    const last = rows[rows.length - 1];
+    last.gapH = Math.PI * 0.92; last.color = -1; // finish row
+    return { rows, gates, coins, count: rows.length };
+  }
+
   const count = 16 + n * 4;
   const gapH = Math.max(0.30, 0.58 - n * 0.022);
-  const colors = n === 1 ? [-1] : (n === 2 ? [0, 1] : [0, 1, 2]);
-  let gapC = rand(0, TAU);
+  const colors = n === 2 ? [0, 1] : [0, 1, 2];
   let color = colors[0];
   let runLeft = randi(3, 5);
   const redP = n < 3 ? 0 : Math.min(0.55, 0.12 + n * 0.04);
@@ -232,8 +266,24 @@ function genLevel(n) {
 function endlessRow(depth, prevGapC) {
   const gapH = Math.max(0.26, 0.55 - depth * 0.004);
   const gapC = norm(prevGapC + rand(-1.2, 1.2));
-  const nColors = depth < 12 ? 1 : depth < 30 ? 2 : 3;
-  const color = nColors === 1 ? -1 : randi(0, nColors - 1);
+  // Colors run in streaks with a repaint gate before every switch — same
+  // fairness contract as levels. (Random per-row colors would be unavoidable
+  // deaths, since there'd be no way to repaint in time.)
+  let color;
+  if (depth < 12) { color = -1; }
+  else {
+    if (depth === 12) { Game.eColor = 0; Game.eRunLeft = randi(3, 5); }
+    Game.eRunLeft--;
+    if (Game.eRunLeft <= 0) {
+      const nColors = depth < 30 ? 2 : 3;
+      let nc = randi(0, nColors - 1);
+      if (nc === Game.eColor) nc = (nc + 1) % nColors;
+      Game.gates.push({ y: depth * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: gapC, color: nc, taken: false, warned: false });
+      Game.eColor = nc;
+      Game.eRunLeft = randi(3, 6);
+    }
+    color = Game.eColor;
+  }
   const row = { y: depth * PHYS.rowSpacing, gapC, gapH, color, reds: [] };
   if (depth > 8 && Math.random() < Math.min(0.5, 0.1 + depth * 0.006)) {
     const rh = rand(0.28, 0.5);
@@ -253,12 +303,15 @@ function startRun(playMode, level) {
   Game.shield = 0; Game.revived = false; Game.newBest = false;
   Game.particles = []; Game.popups = [];
   Game.timeScale = 1; Game.slowT = 0; Game.shake = 0;
+  Game.eColor = 0; Game.eRunLeft = 99;
+  Game.timeLeft = playMode === 'rush' ? 60 : 0;
   const g = playMode === 'levels' ? genLevel(Game.level) : null;
   if (g) { Game.rows = g.rows; Game.gates = g.gates; Game.coins = g.coins; }
   else {
     Game.rows = []; Game.gates = []; Game.coins = [];
     let gc = rand(0, TAU);
     for (let i = 0; i < 14; i++) { const r = endlessRow(i, gc); gc = r.gapC; Game.rows.push(r); }
+    Game.depth = 13;
   }
   Game.rowIndex = -1;
   const first = Game.rows[0];
@@ -286,11 +339,13 @@ function endRunDeath(cause) {
 function finishDeath() {
   Game.mode = 'gameover';
   Game.timeScale = 1;
-  const key = Game.playMode === 'endless' ? 'endless' : Game.level;
-  const prev = Game.playMode === 'endless' ? Save.data.best.endless : (Save.data.best.levels[Game.level] || 0);
+  const prev = Game.playMode === 'endless' ? Save.data.best.endless
+    : Game.playMode === 'rush' ? Save.data.best.rush
+    : (Save.data.best.levels[Game.level] || 0);
   Game.newBest = Game.score > prev;
   if (Game.newBest) {
     if (Game.playMode === 'endless') Save.data.best.endless = Game.score;
+    else if (Game.playMode === 'rush') Save.data.best.rush = Game.score;
     else Save.data.best.levels[Game.level] = Game.score;
   }
   Save.data.coins += Game.coinsRun;
@@ -310,6 +365,22 @@ function levelComplete() {
   const prev = Save.data.best.levels[Game.level] || 0;
   Game.newBest = Game.score > prev;
   if (Game.newBest) Save.data.best.levels[Game.level] = Game.score;
+  Save.save();
+  for (let i = 0; i < 60; i++)
+    burst(rand(0, Game.W), rand(0, Game.H * 0.6), PALETTE[randi(0, 2)].main, 30);
+  showLevelDone(bonus);
+}
+
+function rushComplete() {
+  if (Game.mode !== 'playing' || Game.playMode !== 'rush') return;
+  Game.mode = 'leveldone';
+  Sfx.win();
+  const bonus = Math.floor(Game.score / 20) + Game.coinsRun;
+  Game.coinsRun = bonus;
+  Save.data.coins += bonus;
+  const prev = Save.data.best.rush || 0;
+  Game.newBest = Game.score > prev;
+  if (Game.newBest) Save.data.best.rush = Game.score;
   Save.save();
   for (let i = 0; i < 60; i++)
     burst(rand(0, Game.W), rand(0, Game.H * 0.6), PALETTE[randi(0, 2)].main, 30);
@@ -361,16 +432,19 @@ function update(dt) {
   b.vy = Math.min(b.vy, 2400);
   b.y += b.vy * dt;
 
-  // endless: extend tower ahead
-  if (G.playMode === 'endless') {
+  // endless/rush: extend tower ahead
+  if (G.playMode !== 'levels') {
     let last = G.rows[G.rows.length - 1];
     while (last.y < b.y + G.H * 2.2) {
-      const r = endlessRow(G.rows.length, last.gapC);
+      G.depth++;
+      const r = endlessRow(G.depth, last.gapC);
       G.rows.push(r); last = r;
       if (Math.random() < 0.35) G.coins.push({ y: r.y - PHYS.rowSpacing / 2, localA: norm(r.gapC + rand(-0.5, 0.5)), taken: false });
     }
     // drop rows far behind to bound memory
     while (G.rows.length > 4 && G.rows[0].y < b.y - G.H) { G.rows.shift(); G.rowIndex--; }
+    G.gates = G.gates.filter(gt => !gt.taken && gt.y > b.y - G.H);
+    G.coins = G.coins.filter(c => !c.taken && c.y > b.y - G.H);
   }
 
   // platform crossings (falling only)
@@ -410,6 +484,21 @@ function update(dt) {
       }
     }
     } // end if (playing)
+  }
+
+  // warn once when a repaint gate scrolls into view
+  for (const gt of G.gates) {
+    if (!gt.taken && !gt.warned) {
+      const sy = gt.y - G.camY;
+      if (sy > -40 && sy < G.H * 0.8) {
+        gt.warned = true;
+        if (b.color !== gt.color) {
+          const c = PALETTE[gt.color];
+          popup('REPAINT: ' + c.name.toUpperCase() + '!', c.main);
+          Sfx.tone(520, 0.12, 'triangle', 0.18);
+        }
+      }
+    }
   }
 
   // camera follows ball
@@ -615,16 +704,21 @@ function drawGate(gt) {
   const th = gt.localA + Game.rot;
   const [x, y] = ringPt(th, sy);
   const c = PALETTE[gt.color].main;
-  const p = 1 + 0.12 * Math.sin(Game.time * 6);
-  const r = 20 * p;
+  const p = 1 + 0.14 * Math.sin(Game.time * 6);
+  // vertical light beam so the gate is visible from far above
+  ctx.globalAlpha = 0.16 + 0.06 * Math.sin(Game.time * 6);
+  ctx.fillStyle = c;
+  ctx.fillRect(x - 12, y - 110, 24, 220);
+  ctx.globalAlpha = 1;
+  const r = 30 * p;
   ctx.save();
   ctx.translate(x, y); ctx.rotate(Math.PI / 4 + Game.time * 1.5);
-  ctx.strokeStyle = c; ctx.lineWidth = 5; ctx.shadowBlur = 18; ctx.shadowColor = c;
+  ctx.strokeStyle = c; ctx.lineWidth = 7; ctx.shadowBlur = 24; ctx.shadowColor = c;
   ctx.strokeRect(-r / 1.4, -r / 1.4, r * 1.43, r * 1.43);
   ctx.restore(); ctx.shadowBlur = 0;
-  ctx.fillStyle = c; ctx.globalAlpha = 0.9;
-  ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText('◈', x, y + 26);
+  ctx.fillStyle = c; ctx.globalAlpha = 0.95;
+  ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('◈ REPAINT ◈', x, y + 44);
   ctx.globalAlpha = 1;
 }
 
@@ -657,8 +751,9 @@ function drawBall() {
   ctx.translate(x, y); ctx.scale(1 / squash, squash);
   ctx.shadowBlur = 22; ctx.shadowColor = col.main;
   const r = b.r;
-  const baseGrad = (c1, c2) => { const g = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.2, 0, 0, r); g.addColorStop(0, c1); g.addColorStop(1, c2); return g; };
-  ctx.fillStyle = baseGrad('#ffffff', col.main);
+  // saturated color with a small white hot core (reads clearly at phone size)
+  const baseGrad = () => { const g = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.15, 0, 0, r); g.addColorStop(0, '#ffffff'); g.addColorStop(0.32, col.main); g.addColorStop(1, col.main); return g; };
+  ctx.fillStyle = baseGrad();
   const drawCore = (alpha) => { ctx.globalAlpha = alpha; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill(); ctx.globalAlpha = 1; };
   switch (skin) {
     case 'comet':
@@ -699,6 +794,9 @@ function drawBall() {
     }
     default: drawCore(1);
   }
+  // crisp color ring so the ball's color reads at a glance on small screens
+  ctx.strokeStyle = col.main; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(0, 0, r + 2, 0, TAU); ctx.stroke();
   ctx.restore(); ctx.shadowBlur = 0;
   if (Game.shield > 0) {
     ctx.strokeStyle = `rgba(0,255,255,${0.4 + 0.4 * Math.sin(Game.time * 10)})`;
@@ -787,15 +885,22 @@ function toast(msg) {
 }
 function updateHUD() {
   $('hud-score').textContent = Game.score;
-  $('hud-level').textContent = Game.playMode === 'endless' ? 'ENDLESS · ' + Math.max(0, Game.rowIndex + 1) + ' ROWS' : 'LEVEL ' + Game.level;
+  $('hud-level').textContent = Game.playMode === 'endless' ? 'ENDLESS · ' + Math.max(0, Game.rowIndex + 1) + ' ROWS'
+    : Game.playMode === 'rush' ? 'RUSH · ' + fmtTime(Game.timeLeft) : 'LEVEL ' + Game.level;
   $('coin-count').textContent = Save.data.coins;
+  // "you are this color" chip — the core of the color mechanic, always visible
+  const c = PALETTE[Game.ball.color];
+  $('hud-cname').textContent = c.name.toUpperCase();
+  $('hud-dot').style.background = c.main;
+  $('hud-dot').style.boxShadow = '0 0 8px ' + c.main;
+  $('hud-color').style.borderColor = c.main;
   const cb = $('combo-badge');
   if (Game.streak >= 3) { cb.textContent = 'x' + Game.streak + ' COMBO'; cb.classList.remove('hidden'); }
   else cb.classList.add('hidden');
 }
 
 function refreshMenu() {
-  const best = Math.max(Save.data.best.endless, ...Object.values(Save.data.best.levels), 0);
+  const best = Math.max(Save.data.best.endless, Save.data.best.rush || 0, ...Object.values(Save.data.best.levels), 0);
   $('menu-best').textContent = best;
   $('menu-coins').textContent = Save.data.coins;
 }
@@ -812,7 +917,9 @@ function showGameOver() {
     ? 'Red sectors are spikes — steer clear of them.'
     : 'Wrong color! Fly through the glowing ring to repaint first.';
   $('go-score').textContent = Game.score;
-  const best = Game.playMode === 'endless' ? Save.data.best.endless : (Save.data.best.levels[Game.level] || 0);
+  const best = Game.playMode === 'endless' ? Save.data.best.endless
+    : Game.playMode === 'rush' ? Save.data.best.rush
+    : (Save.data.best.levels[Game.level] || 0);
   $('go-best').textContent = best;
   $('go-coins').textContent = '+' + Game.coinsRun;
   $('go-newbest').classList.toggle('hidden', !Game.newBest);
@@ -827,6 +934,17 @@ function showLevelDone(bonus) {
   $('ld-bonus').textContent = '+' + Game.coinsRun + ' 🪙';
   $('btn-double').disabled = false;
   $('btn-double').style.display = 'block';
+  const h2 = document.querySelector('#leveldone h2');
+  const nx = $('btn-next');
+  if (Game.playMode === 'rush') {
+    h2.textContent = "TIME'S UP!";
+    nx.innerHTML = '↻ RUSH AGAIN';
+    nx.onclick = () => { Sfx.click(); startRun('rush'); };
+  } else {
+    h2.textContent = 'LEVEL CLEAR!';
+    nx.innerHTML = 'NEXT LEVEL →';
+    nx.onclick = () => { Sfx.click(); startRun('levels', Game.level + 1); };
+  }
   hud(false);
   showScreen('leveldone');
 }
@@ -920,6 +1038,7 @@ function pauseGame() {
 function wire() {
   $('btn-levels').onclick = () => { Sfx.init(); Sfx.click(); renderLevels(); showScreen('levels'); };
   $('btn-endless').onclick = () => { Sfx.init(); Sfx.click(); startRun('endless'); };
+  $('btn-rush').onclick = () => { Sfx.init(); Sfx.click(); startRun('rush'); };
   $('btn-shop').onclick = () => { Sfx.click(); renderShop(); showScreen('shop'); };
   $('btn-how').onclick = () => { Sfx.click(); showScreen('howto'); };
   $('btn-how-back').onclick = () => { Sfx.click(); goMenu(); };
@@ -942,7 +1061,6 @@ function wire() {
   $('btn-go-menu').onclick = () => { Sfx.click(); goMenu(); };
   $('btn-revive').onclick = () => { Sfx.click(); revive(); };
 
-  $('btn-next').onclick = () => { Sfx.click(); startRun('levels', Game.level + 1); };
   $('btn-ld-menu').onclick = () => { Sfx.click(); goMenu(); };
   $('btn-double').onclick = () => {
     Sfx.click();
@@ -966,6 +1084,12 @@ function loop(now) {
   lastFrame = now;
   if (Game.mode === 'playing' || Game.mode === 'dying') {
     update(rdt * Game.timeScale);
+    if (Game.playMode === 'rush' && Game.mode === 'playing') {
+      Game.timeLeft -= rdt;
+      const s = Math.ceil(Game.timeLeft);
+      if (s !== Game._lastRushSec) { Game._lastRushSec = s; updateHUD(); }
+      if (Game.timeLeft <= 0) rushComplete();
+    }
   } else if (Game.mode === 'menu') {
     Game.time += rdt;
     Game.rot += rdt * 0.5; // attract-mode spin

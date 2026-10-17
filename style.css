@@ -42,6 +42,10 @@ h2 { font-size: 22px; letter-spacing: 2px; margin-bottom: 16px; color: #0ff; tex
   border-radius: 14px; cursor: pointer; box-shadow: 0 0 18px rgba(0,255,255,.5); }
 .big-btn.alt { background: linear-gradient(90deg, #f0f, #a0f); box-shadow: 0 0 18px rgba(255,0,255,.5); color: #fff; }
 .big-btn.reward { background: linear-gradient(90deg, #ffd700, #ff9d00); box-shadow: 0 0 18px rgba(255,200,0,.5); }
+.big-btn.rush { background: linear-gradient(90deg, #ffb300, #ff5e00); box-shadow: 0 0 18px rgba(255,140,0,.5); color: #fff; }
+#hud-color { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; font-weight: 800;
+  letter-spacing: 1px; background: rgba(0,0,0,.45); border: 1px solid #0ff; padding: 5px 10px; border-radius: 20px; }
+#hud-dot { width: 12px; height: 12px; border-radius: 50%; background: #0ff; box-shadow: 0 0 8px #0ff; }
 .big-btn .sub { display: block; font-size: 11px; font-weight: 600; opacity: .8; }
 .big-btn:active { transform: scale(.97); }
 .big-btn:disabled { opacity: .35; box-shadow: none; cursor: default; }
