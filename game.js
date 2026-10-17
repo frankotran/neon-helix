@@ -192,13 +192,12 @@ function genLevel(n) {
   const rows = [], gates = [], coins = [];
   let gapC = rand(0, TAU);
 
-  // Level 1 is a tutorial: neutral rows, then a safe cyan run with a practice
-  // gate, then a real magenta run with a gate, then back to cyan. The color
-  // mechanic is taught in the first 60 seconds instead of hiding in level 2.
+  // Level 1 is a tutorial: every row is colored (no confusing neutrals) —
+  // the ball starts cyan and so do the first rows, so "land on YOUR color"
+  // is obvious from the first second. Gates teach repainting.
   if (n === 1) {
     const gapH = 0.55;
     const segs = [
-      { color: -1, len: 4 },
       { color: 0, len: 6 },
       { color: 1, len: 4 },
       { color: 0, len: 2 }
@@ -270,7 +269,7 @@ function endlessRow(depth, prevGapC) {
   // fairness contract as levels. (Random per-row colors would be unavoidable
   // deaths, since there'd be no way to repaint in time.)
   let color;
-  if (depth < 12) { color = -1; }
+  if (depth < 12) { color = 0; } // opening stretch matches the cyan ball — no grey confusion
   else {
     if (depth === 12) { Game.eColor = 0; Game.eRunLeft = randi(3, 5); }
     Game.eRunLeft--;
@@ -467,6 +466,7 @@ function update(dt) {
             Sfx.repaint();
             burst(G.W / 2, G.ballScreenY, PALETTE[b.color].main, 22);
             popup('REPAINTED!', PALETTE[b.color].main);
+            updateHUD(); // refresh the "you are this color" chip immediately
           }
         }
       }
@@ -602,6 +602,8 @@ window.addEventListener('resize', resize);
 function initStars() {
   Game.stars = [];
   for (let i = 0; i < 80; i++) Game.stars.push({ x: rand(0, Game.W), y: rand(0, Game.H), s: rand(0.6, 2.4), tw: rand(0, TAU) });
+  Game.embers = [];
+  for (let i = 0; i < 36; i++) Game.embers.push({ x: rand(0, Game.W), y: rand(0, Game.H), s: rand(1, 3), v: rand(12, 42) });
 }
 
 /* ---------------- Rendering ---------------- */
@@ -625,6 +627,12 @@ function drawBackground() {
     ctx.globalAlpha = a; ctx.fillStyle = th.star;
     ctx.fillRect(s.x, y, s.s, s.s);
   }
+  // slow rising embers for depth
+  if (Game.embers) for (const e of Game.embers) {
+    const y = (((e.y - Game.time * e.v) % (Game.H + 40)) + Game.H + 40) % (Game.H + 40) - 20;
+    ctx.globalAlpha = 0.22; ctx.fillStyle = th.star;
+    ctx.fillRect(e.x, y, e.s, e.s);
+  }
   ctx.globalAlpha = 1;
 }
 
@@ -637,6 +645,14 @@ function drawColumn() {
   ctx.fillStyle = 'rgba(0,240,255,.08)';
   ctx.fillRect(cx - w / 2, -20, 3, Game.H + 40);
   ctx.fillRect(cx + w / 2 - 3, -20, 3, Game.H + 40);
+  // slow energy band traveling up the column
+  const bandY = Game.H + 200 - ((Game.time * 110) % (Game.H + 400));
+  const eg = ctx.createLinearGradient(0, bandY - 80, 0, bandY + 80);
+  eg.addColorStop(0, 'rgba(0,240,255,0)');
+  eg.addColorStop(0.5, 'rgba(0,240,255,.10)');
+  eg.addColorStop(1, 'rgba(0,240,255,0)');
+  ctx.fillStyle = eg;
+  ctx.fillRect(cx - w / 2, 0, w, Game.H);
 }
 
 // point on ring: theta=0 faces viewer (bottom of ellipse)
@@ -666,8 +682,9 @@ function drawRow(row) {
   ctx.globalAlpha = 0.5;
   strokeArc(-Math.PI / 2, Math.PI / 2, sy + RING * 0.55, '#020208', RING);
   ctx.globalAlpha = 1;
-  const base = row.color === -1 ? '#7d84a0' : PALETTE[row.color].main;
-  const dark = row.color === -1 ? '#3a3f55' : PALETTE[row.color].dim;
+  // color -1 is the finish row: glowing golden goal ring, never a "grey" platform
+  const base = row.color === -1 ? '#ffe9a3' : PALETTE[row.color].main;
+  const dark = row.color === -1 ? 'rgba(255,233,163,.35)' : PALETTE[row.color].dim;
   // front half (-PI/2..PI/2), skipping the gap — walk segments
   const segs = [];
   let cur = -Math.PI / 2;
@@ -683,6 +700,16 @@ function drawRow(row) {
   strokeArc(Math.PI / 2, Math.PI * 1.5, sy, dark, RING);
   // front segments (rotate with tower)
   for (const [a, b] of segs) strokeArc(a + Game.rot, b + Game.rot, sy, base, RING, 12);
+  // glowing caps on the gap edges so the opening reads at speed
+  // (skipped on the near-full-circle finish ring)
+  if (row.gapH < 1.2) for (const e of [gapA0, gapA1]) {
+    const w = norm(e + Game.rot);
+    if (Math.abs(w) < Math.PI / 2 - 0.12) {
+      const [gx, gy] = ringPt(w, sy);
+      ctx.fillStyle = base; ctx.shadowBlur = 12; ctx.shadowColor = base;
+      ctx.beginPath(); ctx.arc(gx, gy, 5, 0, TAU); ctx.fill(); ctx.shadowBlur = 0;
+    }
+  }
   // red spike sectors (front half only matters for landing, but draw all)
   for (const s of row.reds) {
     const a0 = s.a0 + Game.rot, a1 = s.a1 + Game.rot;
@@ -797,6 +824,11 @@ function drawBall() {
   // crisp color ring so the ball's color reads at a glance on small screens
   ctx.strokeStyle = col.main; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(0, 0, r + 2, 0, TAU); ctx.stroke();
+  // soft pulsing halo
+  ctx.globalAlpha = 0.22 + 0.08 * Math.sin(Game.time * 5);
+  ctx.strokeStyle = col.main; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, r + 9, 0, TAU); ctx.stroke();
+  ctx.globalAlpha = 1;
   ctx.restore(); ctx.shadowBlur = 0;
   if (Game.shield > 0) {
     ctx.strokeStyle = `rgba(0,255,255,${0.4 + 0.4 * Math.sin(Game.time * 10)})`;
