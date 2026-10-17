@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a1a">
+<title>NEON HELIX</title>
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<div id="game-wrap">
+  <canvas id="game"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="hud-left">
+      <div id="hud-score">0</div>
+      <div id="hud-level">LEVEL 1</div>
+    </div>
+    <div id="hud-right">
+      <div id="hud-coins">🪙 <span id="coin-count">0</span></div>
+      <button id="btn-pause" class="icon-btn" aria-label="Pause">⏸</button>
+      <button id="btn-mute" class="icon-btn" aria-label="Mute">🔊</button>
+    </div>
+    <div id="combo-badge" class="hidden">x2</div>
+  </div>
+
+  <!-- Main menu -->
+  <div id="menu" class="overlay">
+    <div class="panel">
+      <h1 class="logo">NEON<span>HELIX</span></h1>
+      <p class="tagline">Spin the tower. Thread the gaps.<br>Match your color. Don't shatter.</p>
+      <div class="menu-best">
+        <div>🏆 Best <span id="menu-best">0</span></div>
+        <div>🪙 <span id="menu-coins">0</span></div>
+      </div>
+      <button id="btn-levels" class="big-btn">▶ LEVELS</button>
+      <button id="btn-endless" class="big-btn alt">∞ ENDLESS</button>
+      <div class="menu-row">
+        <button id="btn-shop" class="small-btn">🛍 SHOP</button>
+        <button id="btn-how" class="small-btn">❓ HOW TO PLAY</button>
+      </div>
+      <p class="hint">Drag left / right to spin the tower</p>
+    </div>
+  </div>
+
+  <!-- Level select -->
+  <div id="levels" class="overlay hidden">
+    <div class="panel">
+      <h2>SELECT LEVEL</h2>
+      <div id="level-grid"></div>
+      <button id="btn-levels-back" class="small-btn">← BACK</button>
+    </div>
+  </div>
+
+  <!-- Shop -->
+  <div id="shop" class="overlay hidden">
+    <div class="panel wide">
+      <h2>SHOP</h2>
+      <div class="shop-coins">🪙 <span id="shop-coins">0</span></div>
+      <div class="shop-tabs">
+        <button class="shop-tab active" data-tab="balls">BALLS</button>
+        <button class="shop-tab" data-tab="trails">TRAILS</button>
+        <button class="shop-tab" data-tab="themes">THEMES</button>
+      </div>
+      <div id="shop-grid"></div>
+      <button id="btn-shop-back" class="small-btn">← BACK</button>
+    </div>
+  </div>
+
+  <!-- How to play -->
+  <div id="howto" class="overlay hidden">
+    <div class="panel">
+      <h2>HOW TO PLAY</h2>
+      <ul class="how-list">
+        <li>🌀 <b>Drag</b> to spin the tower. The ball bounces on its own.</li>
+        <li>🕳️ Fall through <b>gaps</b> to drop. Chain gaps without bouncing for <b>combo multipliers</b>.</li>
+        <li>🎨 Your ball has a <b>color</b>. Land only on matching colors or neutral gray — wrong color = <b>shatter</b>.</li>
+        <li>💍 Fly through glowing <b>rings</b> to repaint your ball.</li>
+        <li>🔺 <b>Red sectors</b> are spikes. Never touch them.</li>
+        <li>🪙 Grab <b>coins</b> for the shop: new balls, trails, themes.</li>
+        <li>📺 Watch an ad to <b>revive</b> once per run, or double your coins.</li>
+      </ul>
+      <button id="btn-how-back" class="small-btn">← BACK</button>
+    </div>
+  </div>
+
+  <!-- Pause -->
+  <div id="pause" class="overlay hidden">
+    <div class="panel">
+      <h2>PAUSED</h2>
+      <button id="btn-resume" class="big-btn">▶ RESUME</button>
+      <button id="btn-restart" class="big-btn alt">↻ RESTART</button>
+      <button id="btn-quit" class="small-btn">QUIT TO MENU</button>
+    </div>
+  </div>
+
+  <!-- Game over -->
+  <div id="gameover" class="overlay hidden">
+    <div class="panel">
+      <h2 id="go-title">SHATTERED</h2>
+      <p id="go-cause" class="go-cause"></p>
+      <div id="go-newbest" class="hidden">🎉 NEW BEST! 🎉</div>
+      <div class="go-stats">
+        <div><span>SCORE</span><b id="go-score">0</b></div>
+        <div><span>BEST</span><b id="go-best">0</b></div>
+        <div><span>COINS</span><b id="go-coins">0</b></div>
+      </div>
+      <button id="btn-revive" class="big-btn reward">📺 REVIVE <span class="sub">watch ad · once per run</span></button>
+      <button id="btn-retry" class="big-btn">↻ RETRY</button>
+      <button id="btn-go-menu" class="small-btn">MENU</button>
+    </div>
+  </div>
+
+  <!-- Level complete -->
+  <div id="leveldone" class="overlay hidden">
+    <div class="panel">
+      <h2>LEVEL CLEAR!</h2>
+      <div class="go-stats">
+        <div><span>SCORE</span><b id="ld-score">0</b></div>
+        <div><span>BONUS</span><b id="ld-bonus">0</b></div>
+      </div>
+      <button id="btn-double" class="big-btn reward">📺 2x COINS <span class="sub">watch ad</span></button>
+      <button id="btn-next" class="big-btn">NEXT LEVEL →</button>
+      <button id="btn-ld-menu" class="small-btn">MENU</button>
+    </div>
+  </div>
+
+  <!-- Simulated ad card (web build stands in for AdMob) -->
+  <div id="adcard" class="overlay hidden">
+    <div class="panel ad">
+      <div class="ad-label">AD</div>
+      <div class="ad-body">
+        <div class="ad-title">✨ Neon Helix Pro ✨</div>
+        <p>Your ad would play here.<br>(AdMob in the App Store build)</p>
+      </div>
+      <div id="ad-countdown" class="ad-countdown">Reward in 3…</div>
+      <button id="ad-close" class="small-btn hidden">CLAIM ✕</button>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+</div>
+<script src="game.js?v=1"></script>
+</body>
+</html>
