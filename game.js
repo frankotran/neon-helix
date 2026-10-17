@@ -679,7 +679,12 @@ function drawRow(row) {
   const sy = row.y - Game.camY;
   if (sy < -80 || sy > Game.H + 80) return;
   const RING = Math.max(20, Game.R * 0.20);
-  const gapA0 = row.gapC - row.gapH, gapA1 = row.gapC + row.gapH;
+  // Full 360° colored ring with the gap cut clean out, in WORLD angles
+  // (theta = 0 faces the viewer). Lighting is fixed in world space — bright
+  // front, dim back — so the tower reads as rotating under the light instead
+  // of the shading spinning with your drag. The gap is the only opening.
+  const gapW = norm(row.gapC + Game.rot); // gap center, world
+  const gapH = row.gapH;
   // depth skirt
   ctx.globalAlpha = 0.5;
   strokeArc(-Math.PI / 2, Math.PI / 2, sy + RING * 0.55, '#020208', RING);
@@ -687,30 +692,24 @@ function drawRow(row) {
   // color -1 is the finish row: glowing golden goal ring, never a "grey" platform
   const base = row.color === -1 ? '#ffe9a3' : PALETTE[row.color].main;
   const dark = row.color === -1 ? 'rgba(255,233,163,.35)' : PALETTE[row.color].dim;
-  // front half (-PI/2..PI/2), skipping the gap — walk segments
-  const segs = [];
-  let cur = -Math.PI / 2;
-  const g0 = norm(gapA0), g1 = norm(gapA1);
-  // gap may wrap; collect blocked intervals intersected with [-PI/2, PI/2]
-  const blocked = [];
-  const push = (a, b) => { if (b > -Math.PI / 2 && a < Math.PI / 2) blocked.push([Math.max(a, -Math.PI / 2), Math.min(b, Math.PI / 2)]); };
-  if (g0 <= g1) push(g0, g1); else { push(g0, Math.PI); push(-Math.PI, g1); }
-  blocked.sort((a, b) => a[0] - b[0]);
-  for (const [b0, b1] of blocked) { if (b0 > cur) segs.push([cur, b0]); cur = Math.max(cur, b1); }
-  if (cur < Math.PI / 2) segs.push([cur, Math.PI / 2]);
-  // back half (dimmer)
-  strokeArc(Math.PI / 2, Math.PI * 1.5, sy, dark, RING);
-  // front segments (rotate with tower)
-  for (const [a, b] of segs) strokeArc(a + Game.rot, b + Game.rot, sy, base, RING, 12);
+  // critical angles: gap edges + front/back lighting transitions
+  const wpos = a => ((a % TAU) + TAU) % TAU;
+  const crit = [...new Set([wpos(gapW - gapH), wpos(gapW + gapH), wpos(Math.PI / 2), wpos(-Math.PI / 2)])].sort((a, b) => a - b);
+  for (let k = 0; k < crit.length; k++) {
+    const a0 = crit[k], a1 = (k + 1 < crit.length) ? crit[k + 1] : crit[0] + TAU;
+    if (a1 - a0 < 1e-4) continue;
+    const midW = wpos((a0 + a1) / 2), mid = norm(midW);
+    if (angDist(mid, gapW) < gapH - 1e-6) continue; // the gap: draw nothing
+    const front = Math.abs(mid) < Math.PI / 2;
+    strokeArc(a0, a1, sy, front ? base : dark, RING, front ? 12 : 0);
+  }
   // glowing caps on the gap edges so the opening reads at speed
   // (skipped on the near-full-circle finish ring)
-  if (row.gapH < 1.2) for (const e of [gapA0, gapA1]) {
-    const w = norm(e + Game.rot);
-    if (Math.abs(w) < Math.PI / 2 - 0.12) {
-      const [gx, gy] = ringPt(w, sy);
-      ctx.fillStyle = base; ctx.shadowBlur = 12; ctx.shadowColor = base;
-      ctx.beginPath(); ctx.arc(gx, gy, 5, 0, TAU); ctx.fill(); ctx.shadowBlur = 0;
-    }
+  if (gapH < 1.2) for (const e of [gapW - gapH, gapW + gapH]) {
+    const w = norm(e);
+    const [gx, gy] = ringPt(w, sy);
+    ctx.fillStyle = base; ctx.shadowBlur = 12; ctx.shadowColor = base;
+    ctx.beginPath(); ctx.arc(gx, gy, 5, 0, TAU); ctx.fill(); ctx.shadowBlur = 0;
   }
   // red spike sectors (front half only matters for landing, but draw all)
   for (const s of row.reds) {
