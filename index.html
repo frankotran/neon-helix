@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0a0a1a">
 <title>NEON HELIX</title>
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <div id="game-wrap">
@@ -17,7 +17,9 @@
       <div id="hud-score">0</div>
       <div id="hud-level">LEVEL 1</div>
       <div id="hud-color"><span id="hud-dot"></span><span id="hud-cname">CYAN</span></div>
+      <div id="fever-wrap"><div id="fever-fill"></div><span id="fever-label">FEVER</span></div>
     </div>
+    <div id="pu-icons"></div>
     <div id="hud-right">
       <div id="hud-coins">🪙 <span id="coin-count">0</span></div>
       <button id="btn-pause" class="icon-btn" aria-label="Pause">⏸</button>
@@ -35,9 +37,12 @@
         <div>🏆 Best <span id="menu-best">0</span></div>
         <div>🪙 <span id="menu-coins">0</span></div>
       </div>
+      <div id="rival-banner" class="hidden"><span id="rival-text"></span><button id="rival-dismiss">✕</button></div>
       <button id="btn-levels" class="big-btn">▶ LEVELS</button>
       <button id="btn-endless" class="big-btn alt">∞ ENDLESS</button>
       <button id="btn-rush" class="big-btn rush">⚡ RUSH <span class="sub">60-second score attack</span></button>
+      <button id="btn-daily" class="big-btn daily">📅 DAILY <span class="sub" id="daily-sub">same tower for everyone</span></button>
+      <div id="missions"></div>
       <div class="menu-row">
         <button id="btn-shop" class="small-btn">🛍 SHOP</button>
         <button id="btn-how" class="small-btn">❓ HOW TO PLAY</button>
@@ -81,6 +86,10 @@
         <li>💍 Fly through glowing <b>rings</b> to repaint your ball.</li>
         <li>🔺 <b>Red sectors</b> are spikes. Never touch them.</li>
         <li>🪙 Grab <b>coins</b> for the shop: new balls, trails, themes.</li>
+        <li>🔥 <b>FEVER:</b> perfect passes fill the gold meter — full meter = 10s of <b>2× points</b>.</li>
+        <li>✨ Floating <b>powerups</b>: 🛡 shield (forgives one mistake), 🧲 magnet, ⭐ 2× star.</li>
+        <li>📅 <b>DAILY</b>: one shared tower per day. Keep your 🔥 streak alive.</li>
+        <li>🎯 Complete <b>missions</b> for bonus coins.</li>
         <li>📺 Watch an ad to <b>revive</b> once per run, or double your coins.</li>
       </ul>
       <button id="btn-how-back" class="small-btn">← BACK</button>
@@ -102,6 +111,7 @@
     <div class="panel">
       <h2 id="go-title">SHATTERED</h2>
       <p id="go-cause" class="go-cause"></p>
+      <div id="go-mode" class="go-mode"></div>
       <div id="go-newbest" class="hidden">🎉 NEW BEST! 🎉</div>
       <div class="go-stats">
         <div><span>SCORE</span><b id="go-score">0</b></div>
@@ -110,6 +120,7 @@
       </div>
       <button id="btn-revive" class="big-btn reward">📺 REVIVE <span class="sub">watch ad · once per run</span></button>
       <button id="btn-retry" class="big-btn">↻ RETRY</button>
+      <button id="btn-share" class="big-btn alt">🔗 CHALLENGE A RIVAL <span class="sub">copy score link</span></button>
       <button id="btn-go-menu" class="small-btn">MENU</button>
     </div>
   </div>
@@ -143,6 +154,6 @@
 
   <div id="toast" class="hidden"></div>
 </div>
-<script src="game.js?v=5"></script>
+<script src="game.js?v=6"></script>
 </body>
 </html>

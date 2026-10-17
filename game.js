@@ -65,6 +65,8 @@ const Sfx = {
   win() { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.tone(f, 0.16, 'triangle', 0.25), i * 110)); },
   click() { this.tone(700, 0.05, 'square', 0.12); },
   revive() { this.tone(300, 0.4, 'sine', 0.25, 900); },
+  fever() { [523, 659, 784, 1046, 1318].forEach((f, i) => setTimeout(() => this.tone(f, 0.14, 'square', 0.16), i * 70)); },
+  power() { this.tone(500, 0.12, 'triangle', 0.2, 1500); setTimeout(() => this.tone(750, 0.12, 'triangle', 0.2, 2000), 90); },
   pad() { // soft ambient chord, called periodically
     if (!this.ctx || this.muted) return;
     [110, 138.6, 164.8].forEach(f => this.tone(f, 3.2, 'sine', 0.035));
@@ -82,7 +84,9 @@ const Save = {
       balls: { owned: ['orb'], sel: 'orb' },
       trails: { owned: ['none'], sel: 'none' },
       themes: { owned: ['midnight'], sel: 'midnight' },
-      muted: false, runs: 0
+      muted: false, runs: 0,
+      missions: null, // 3 active: [{id, progress}]
+      daily: { last: '', streak: 0, best: {} } // best: {YYYY-MM-DD: score}
     };
   },
   load() {
@@ -94,6 +98,88 @@ const Save = {
   },
   save() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.data)); } catch (e) {} }
 };
+
+/* ---------------- Seeded RNG (Daily Drop: same tower for everyone) ---------------- */
+let SRNG = null; // when set, sr()/sri()/srp() draw from it instead of Math.random
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+const sr = (a, b) => SRNG ? SRNG() * (b - a) + a : rand(a, b);
+const sri = (a, b) => Math.floor(sr(a, b + 1));
+const srp = p => (SRNG ? SRNG() : Math.random()) < p;
+const dayStr = (d) => { d = d || new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+
+/* ---------------- Missions ---------------- */
+const MISSIONS = [
+  { id: 'perfect8', desc: 'Thread 8 PERFECT gaps in one run', target: 8, reward: 60, ev: 'perfect' },
+  { id: 'repaint5', desc: 'Repaint 5× in one run', target: 5, reward: 50, ev: 'repaint' },
+  { id: 'coins30', desc: 'Collect 30 coins in one run', target: 30, reward: 70, ev: 'coin' },
+  { id: 'rush1500', desc: 'Score 1,500 in one RUSH run', target: 1500, reward: 80, ev: 'score', mode: 'rush', max: true },
+  { id: 'fever2', desc: 'Trigger FEVER twice in one run', target: 2, reward: 60, ev: 'fever' },
+  { id: 'endless25', desc: 'Pass 25 rows in one ENDLESS run', target: 25, reward: 60, ev: 'row', mode: 'endless', max: true },
+  { id: 'combo10', desc: 'Reach a x10 combo', target: 10, reward: 50, ev: 'combo', max: true },
+  { id: 'shield1', desc: 'Grab a shield powerup', target: 1, reward: 40, ev: 'shield' },
+  { id: 'daily3', desc: 'Play 3 Daily Drops', target: 3, reward: 100, ev: 'daily', cumul: true }
+];
+function missionDef(id) { return MISSIONS.find(d => d.id === id); }
+function ensureMissions() {
+  if (!Save.data.missions || !Array.isArray(Save.data.missions) || Save.data.missions.length !== 3) {
+    const pool = MISSIONS.map(m => m.id);
+    Save.data.missions = [];
+    for (let i = 0; i < 3; i++) {
+      const id = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+      Save.data.missions.push({ id, progress: 0 });
+    }
+    Save.save();
+  }
+}
+// ev: mission event name. val: for max-type, the running value. mode: override playMode check.
+function missionEv(ev, val, mode) {
+  ensureMissions();
+  for (const m of Save.data.missions) {
+    const def = missionDef(m.id);
+    if (!def || def.ev !== ev) continue;
+    if (def.mode && def.mode !== (mode || Game.playMode)) continue;
+    let prog;
+    if (def.cumul) { m.progress = Math.min(def.target, (m.progress || 0) + 1); prog = m.progress; }
+    else {
+      Game.mRun = Game.mRun || {};
+      Game.mRun[m.id] = def.max ? Math.max(Game.mRun[m.id] || 0, val || 0) : (Game.mRun[m.id] || 0) + 1;
+      prog = Game.mRun[m.id];
+    }
+    if (prog >= def.target && !m._awarded) {
+      m._awarded = true;
+      Save.data.coins += def.reward;
+      Save.save();
+      toast('🎯 MISSION: ' + def.desc + '  +' + def.reward + '🪙');
+      Sfx.win();
+      for (let i = 0; i < 40; i++) burst(rand(0, Game.W), rand(0, Game.H * 0.5), '#ffd700', 20);
+      updateHUD();
+      // deal a replacement mission
+      setTimeout(() => {
+        const active = new Set(Save.data.missions.map(x => x.id));
+        const pool = MISSIONS.map(d => d.id).filter(id => !active.has(id));
+        m.id = pool[Math.floor(Math.random() * pool.length)];
+        m.progress = 0; m._awarded = false;
+        Save.save();
+        if (Game.mode === 'menu') refreshMenu();
+      }, 2500);
+    }
+  }
+}
+
+/* ---------------- Haptics ---------------- */
+function buzz(p) { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} }
 
 /* ---------------- Ads ----------------
    ADMOB SWAP POINTS: in the Capacitor native build, replace the body of
@@ -171,6 +257,12 @@ const Game = {
   depth: 0,                  // endless/rush: deepest row depth generated
   particles: [], popups: [], stars: [],
   deathCause: '', newBest: false,
+  // v6: addiction systems
+  fever: 0, feverT: 0, feverFlash: 0,   // fever meter 0-100, active timer, trigger flash
+  powerups: [],                          // in-world pickups {y, localA, kind, taken}
+  puShield: false, puMagnet: 0, puStar: 0, // active powerup effects
+  mRun: null,                            // per-run mission progress {missionId: n}
+  rival: null,                           // {score, mode, beaten} from ?rival= link
   W: 0, H: 0, R: 120, ballScreenY: 0,
   time: 0
 };
@@ -188,9 +280,14 @@ const PHYS = {
    Fairness contract: consecutive gap centers differ by <= 1.5 rad (reachable
    during one bounce's airtime); red sectors never overlap a gap; a repaint
    gate always sits in the gap line before a color change. */
+const PU_KINDS = ['shield', 'magnet', 'star'];
 function genLevel(n) {
-  const rows = [], gates = [], coins = [];
-  let gapC = rand(0, TAU);
+  const rows = [], gates = [], coins = [], powerups = [];
+  let gapC = sr(0, TAU);
+  // occasional powerup floating in the gap between rows (never on the finish row)
+  const maybePowerup = (y, gapCRef) => {
+    if (srp(0.08)) powerups.push({ y, localA: norm(gapCRef + sr(-0.4, 0.4)), kind: PU_KINDS[sri(0, 2)], taken: false });
+  };
 
   // Level 1 is a tutorial: every row is colored (no confusing neutrals) —
   // the ball starts cyan and so do the first rows, so "land on YOUR color"
@@ -206,10 +303,11 @@ function genLevel(n) {
     for (const s of segs) {
       let firstGap = gapC;
       for (let k = 0; k < s.len; k++, i++) {
-        gapC = norm(gapC + rand(-1.2, 1.2));
+        gapC = norm(gapC + sr(-1.2, 1.2));
         if (k === 0) firstGap = gapC;
         rows.push({ y: i * PHYS.rowSpacing, gapC, gapH, color: s.color, reds: [] });
-        if (Math.random() < 0.4) coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + rand(-0.5, 0.5)), taken: false });
+        if (srp(0.4)) coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.5, 0.5)), taken: false });
+        maybePowerup(i * PHYS.rowSpacing - PHYS.rowSpacing / 2, gapC);
       }
       if (s.color !== -1 && i - s.len > 0) {
         gates.push({ y: (i - s.len) * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: firstGap, color: s.color, taken: false, warned: false });
@@ -217,30 +315,30 @@ function genLevel(n) {
     }
     const last = rows[rows.length - 1];
     last.gapH = Math.PI * 0.92; last.color = -1; // finish row
-    return { rows, gates, coins, count: rows.length };
+    return { rows, gates, coins, powerups, count: rows.length };
   }
 
   const count = 16 + n * 4;
   const gapH = Math.max(0.30, 0.58 - n * 0.022);
   const colors = n === 2 ? [0, 1] : [0, 1, 2];
   let color = colors[0];
-  let runLeft = randi(3, 5);
+  let runLeft = sri(3, 5);
   const redP = n < 3 ? 0 : Math.min(0.55, 0.12 + n * 0.04);
 
   for (let i = 0; i < count; i++) {
     const isLast = i === count - 1;
-    gapC = norm(gapC + rand(-1.2, 1.2));
+    gapC = norm(gapC + sr(-1.2, 1.2));
     // color runs with repaint gates between them
     if (n > 1 && !isLast) {
       runLeft--;
       if (runLeft <= 0) {
-        const next = colors[randi(0, colors.length - 1)];
+        const next = colors[sri(0, colors.length - 1)];
         if (next !== color || colors.length === 1) {
           const nc = next === color ? (color + 1) % colors.length : next;
           gates.push({ y: i * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: gapC, color: nc, taken: false });
           color = nc;
         }
-        runLeft = randi(3, 6);
+        runLeft = sri(3, 6);
       }
     }
     const rowColor = isLast ? -1 : color; // final row: neutral, huge gap = finish
@@ -249,45 +347,49 @@ function genLevel(n) {
       gapC, gapH: isLast ? Math.PI * 0.92 : gapH,
       color: rowColor, reds: []
     };
-    if (!isLast && Math.random() < redP) {
-      const rh = rand(0.28, 0.5);
-      const rc = norm(gapC + Math.PI + rand(-0.9, 0.9));
+    if (!isLast && srp(redP)) {
+      const rh = sr(0.28, 0.5);
+      const rc = norm(gapC + Math.PI + sr(-0.9, 0.9));
       if (angDist(rc, gapC) > gapH + rh + 0.25) row.reds.push({ a0: rc - rh, a1: rc + rh });
     }
     rows.push(row);
-    if (!isLast && Math.random() < 0.4) {
-      coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + rand(-0.5, 0.5)), taken: false });
+    if (!isLast && srp(0.4)) {
+      coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.5, 0.5)), taken: false });
     }
+    if (!isLast) maybePowerup(i * PHYS.rowSpacing - PHYS.rowSpacing / 2, gapC);
   }
-  return { rows, gates, coins, count };
+  return { rows, gates, coins, powerups, count };
 }
 
 function endlessRow(depth, prevGapC) {
   const gapH = Math.max(0.26, 0.55 - depth * 0.004);
-  const gapC = norm(prevGapC + rand(-1.2, 1.2));
+  const gapC = norm(prevGapC + sr(-1.2, 1.2));
   // Colors run in streaks with a repaint gate before every switch — same
   // fairness contract as levels. (Random per-row colors would be unavoidable
   // deaths, since there'd be no way to repaint in time.)
   let color;
   if (depth < 12) { color = 0; } // opening stretch matches the cyan ball — no grey confusion
   else {
-    if (depth === 12) { Game.eColor = 0; Game.eRunLeft = randi(3, 5); }
+    if (depth === 12) { Game.eColor = 0; Game.eRunLeft = sri(3, 5); }
     Game.eRunLeft--;
     if (Game.eRunLeft <= 0) {
       const nColors = depth < 30 ? 2 : 3;
-      let nc = randi(0, nColors - 1);
+      let nc = sri(0, nColors - 1);
       if (nc === Game.eColor) nc = (nc + 1) % nColors;
       Game.gates.push({ y: depth * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: gapC, color: nc, taken: false, warned: false });
       Game.eColor = nc;
-      Game.eRunLeft = randi(3, 6);
+      Game.eRunLeft = sri(3, 6);
     }
     color = Game.eColor;
   }
   const row = { y: depth * PHYS.rowSpacing, gapC, gapH, color, reds: [] };
-  if (depth > 8 && Math.random() < Math.min(0.5, 0.1 + depth * 0.006)) {
-    const rh = rand(0.28, 0.5);
-    const rc = norm(gapC + Math.PI + rand(-0.9, 0.9));
+  if (depth > 8 && srp(Math.min(0.5, 0.1 + depth * 0.006))) {
+    const rh = sr(0.28, 0.5);
+    const rc = norm(gapC + Math.PI + sr(-0.9, 0.9));
     if (angDist(rc, gapC) > gapH + rh + 0.25) row.reds.push({ a0: rc - rh, a1: rc + rh });
+  }
+  if (depth > 2 && srp(0.08)) {
+    Game.powerups.push({ y: depth * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.4, 0.4)), kind: PU_KINDS[sri(0, 2)], taken: false });
   }
   return row;
 }
@@ -303,15 +405,33 @@ function startRun(playMode, level) {
   Game.particles = []; Game.popups = [];
   Game.timeScale = 1; Game.slowT = 0; Game.shake = 0;
   Game.eColor = 0; Game.eRunLeft = 99;
+  // v6 state
+  Game.fever = 0; Game.feverT = 0; Game.feverFlash = 0;
+  Game.powerups = []; Game.puShield = false; Game.puMagnet = 0; Game.puStar = 0;
+  Game.mRun = {};
   Game.timeLeft = playMode === 'rush' ? 60 : 0;
+  // Daily Drop: seeded tower, same for everyone today; streak bookkeeping
+  SRNG = null;
+  if (playMode === 'daily') {
+    SRNG = mulberry32(hashStr('neonhelix-daily-' + dayStr()));
+    const d = Save.data.daily, today = dayStr();
+    const yest = dayStr(new Date(Date.now() - 864e5));
+    if (d.last !== today) {
+      d.streak = (d.last === yest) ? d.streak + 1 : 1;
+      d.last = today;
+      Save.save();
+    }
+    missionEv('daily');
+  }
   const g = playMode === 'levels' ? genLevel(Game.level) : null;
-  if (g) { Game.rows = g.rows; Game.gates = g.gates; Game.coins = g.coins; }
+  if (g) { Game.rows = g.rows; Game.gates = g.gates; Game.coins = g.coins; Game.powerups = g.powerups; }
   else {
-    Game.rows = []; Game.gates = []; Game.coins = [];
-    let gc = rand(0, TAU);
+    Game.rows = []; Game.gates = []; Game.coins = []; Game.powerups = [];
+    let gc = sr(0, TAU);
     for (let i = 0; i < 14; i++) { const r = endlessRow(i, gc); gc = r.gapC; Game.rows.push(r); }
     Game.depth = 13;
   }
+  if (playMode !== 'daily') SRNG = null; // daily keeps its seed for tower extension
   Game.rowIndex = -1;
   const first = Game.rows[0];
   Game.ball.y = first.y - 160;
@@ -327,24 +447,39 @@ function startRun(playMode, level) {
 
 function endRunDeath(cause) {
   if (Game.shield > 0 || Game.mode !== 'playing') return;
+  // shield powerup: forgive one mistake instead of dying
+  if (Game.puShield) {
+    Game.puShield = false;
+    Game.shield = 1.5;
+    Game.ball.vy = -PHYS.bounceV;
+    burst(Game.W / 2, Game.ballScreenY, '#7df9ff', 30);
+    popup('SHIELD SAVED YOU!', '#7df9ff');
+    Sfx.revive(); buzz(60);
+    updateHUD();
+    return;
+  }
   Game.mode = 'dying';
   Game.deathCause = cause;
   Game.timeScale = 0.22; Game.slowT = 0.8;
   Game.shake = 14;
   burst(Game.W / 2, Game.ballScreenY, PALETTE[Game.ball.color].main, 46);
   Sfx.shatter();
+  buzz([60, 40, 60]);
 }
 
 function finishDeath() {
   Game.mode = 'gameover';
   Game.timeScale = 1;
+  const today = dayStr();
   const prev = Game.playMode === 'endless' ? Save.data.best.endless
     : Game.playMode === 'rush' ? Save.data.best.rush
+    : Game.playMode === 'daily' ? (Save.data.daily.best[today] || 0)
     : (Save.data.best.levels[Game.level] || 0);
   Game.newBest = Game.score > prev;
   if (Game.newBest) {
     if (Game.playMode === 'endless') Save.data.best.endless = Game.score;
     else if (Game.playMode === 'rush') Save.data.best.rush = Game.score;
+    else if (Game.playMode === 'daily') Save.data.daily.best[today] = Game.score;
     else Save.data.best.levels[Game.level] = Game.score;
   }
   Save.data.coins += Game.coinsRun;
@@ -424,6 +559,14 @@ function update(dt) {
   G.rotVel = clamp(G.rotVel, -PHYS.maxRotVel, PHYS.maxRotVel);
 
   if (G.shield > 0) G.shield -= dt;
+  // v6 timers
+  if (G.puMagnet > 0) G.puMagnet -= dt;
+  if (G.puStar > 0) G.puStar -= dt;
+  if (G.feverFlash > 0) G.feverFlash = Math.max(0, G.feverFlash - dt * 2);
+  if (G.feverT > 0) {
+    G.feverT -= dt;
+    if (G.feverT <= 0) { G.feverT = 0; G.fever = 0; toast('Fever over!'); }
+  }
 
   const b = G.ball;
   const prevY = b.y;
@@ -438,12 +581,13 @@ function update(dt) {
       G.depth++;
       const r = endlessRow(G.depth, last.gapC);
       G.rows.push(r); last = r;
-      if (Math.random() < 0.35) G.coins.push({ y: r.y - PHYS.rowSpacing / 2, localA: norm(r.gapC + rand(-0.5, 0.5)), taken: false });
+      if (srp(0.35)) G.coins.push({ y: r.y - PHYS.rowSpacing / 2, localA: norm(r.gapC + sr(-0.5, 0.5)), taken: false });
     }
     // drop rows far behind to bound memory
     while (G.rows.length > 4 && G.rows[0].y < b.y - G.H) { G.rows.shift(); G.rowIndex--; }
     G.gates = G.gates.filter(gt => !gt.taken && gt.y > b.y - G.H);
     G.coins = G.coins.filter(c => !c.taken && c.y > b.y - G.H);
+    G.powerups = G.powerups.filter(p => !p.taken && p.y > b.y - G.H);
   }
 
   // platform crossings (falling only)
@@ -466,20 +610,34 @@ function update(dt) {
             Sfx.repaint();
             burst(G.W / 2, G.ballScreenY, PALETTE[b.color].main, 22);
             popup('REPAINTED!', PALETTE[b.color].main);
+            addFever(10);
+            missionEv('repaint');
             updateHUD(); // refresh the "you are this color" chip immediately
           }
         }
       }
     }
+    const coinReach = G.puMagnet > 0 ? 1.3 : PHYS.coinHalf; // magnet vacuums coins
     for (const c of G.coins) {
       if (!c.taken && prevY < c.y && b.y >= c.y) {
-        if (angDist(0, norm(c.localA + G.rot)) < PHYS.coinHalf) {
+        if (angDist(0, norm(c.localA + G.rot)) < coinReach) {
           c.taken = true;
           G.coinsRun++;
           G.score += 25;
+          addFever(2);
           Sfx.coin();
           burst(G.W / 2, G.ballScreenY, '#ffd700', 12);
+          missionEv('coin');
+          checkRival();
           updateHUD();
+        }
+      }
+    }
+    for (const p of G.powerups) {
+      if (!p.taken && prevY < p.y && b.y >= p.y) {
+        if (angDist(0, norm(p.localA + G.rot)) < 0.55) {
+          p.taken = true;
+          applyPowerup(p.kind);
         }
       }
     }
@@ -513,6 +671,65 @@ function update(dt) {
   if (Sfx.padTimer <= 0) { Sfx.pad(); Sfx.padTimer = 5; }
 }
 
+/* ---------------- v6: fever / powerups / rival ---------------- */
+function addFever(n) {
+  const G = Game;
+  if (G.mode !== 'playing' || G.feverT > 0) return;
+  G.fever = clamp(G.fever + n, 0, 100);
+  if (G.fever >= 100) triggerFever();
+}
+function triggerFever() {
+  const G = Game;
+  G.feverT = 10;
+  G.feverFlash = 1;
+  popup('🔥 FEVER! 2× POINTS 🔥', '#ffd700');
+  Sfx.fever();
+  buzz(80);
+  missionEv('fever');
+  for (let i = 0; i < 40; i++) burst(rand(0, G.W), rand(0, G.H * 0.5), '#ffd700', 22);
+}
+function scoreMult() {
+  let m = 1;
+  if (Game.feverT > 0) m *= 2;
+  if (Game.puStar > 0) m *= 2;
+  return m;
+}
+const PU_META = {
+  shield: { emoji: '🛡', name: 'SHIELD', color: '#7df9ff' },
+  magnet: { emoji: '🧲', name: 'MAGNET', color: '#ff9d00' },
+  star: { emoji: '⭐', name: '2× STAR', color: '#ffe45e' }
+};
+function applyPowerup(kind) {
+  const G = Game, meta = PU_META[kind];
+  Sfx.power();
+  buzz(40);
+  burst(G.W / 2, G.ballScreenY, meta.color, 26);
+  if (kind === 'shield') {
+    G.puShield = true;
+    popup('🛡 SHIELD!', meta.color);
+    toast('Shield: one mistake forgiven');
+    missionEv('shield');
+  } else if (kind === 'magnet') {
+    G.puMagnet = 8;
+    popup('🧲 MAGNET!', meta.color);
+  } else {
+    G.puStar = 10;
+    popup('⭐ 2× POINTS!', meta.color);
+  }
+  updateHUD();
+}
+function checkRival() {
+  const rv = Game.rival;
+  if (rv && !rv.beaten && rv.mode === Game.playMode && Game.score > rv.score) {
+    rv.beaten = true;
+    popup('🎯 RIVAL BEATEN!', '#ffd700');
+    for (let i = 0; i < 60; i++) burst(rand(0, Game.W), rand(0, Game.H * 0.5), PALETTE[randi(0, 2)].main, 26);
+    Sfx.win();
+    buzz(80);
+    toast('You beat the rival score of ' + rv.score + '!');
+  }
+}
+
 function onCrossRow(row, i) {
   const G = Game, b = G.ball;
   const rel = angDist(0, norm(row.gapC + G.rot));
@@ -524,13 +741,30 @@ function onCrossRow(row, i) {
     G.bestStreak = Math.max(G.bestStreak, G.streak);
     let pts = 10 * G.streak;
     const perfect = rel < row.gapH * 0.35;
-    if (perfect) { pts = Math.round(pts * 1.5); popup('PERFECT +' + pts, '#ffd700'); Sfx.perfect(); }
-    else if (rel > row.gapH * 0.8) { pts += 15; popup('CLOSE! +' + pts, '#ff9d00'); }
-    else if (G.streak >= 3) popup('x' + G.streak + ' COMBO', '#ff2fd6');
+    if (perfect) {
+      pts = Math.round(pts * 1.5);
+      popup('PERFECT +' + pts, '#ffd700'); Sfx.perfect();
+      addFever(34); missionEv('perfect'); buzz([15, 30, 15]);
+    } else if (rel > row.gapH * 0.8) {
+      pts += 15; popup('CLOSE! +' + pts, '#ff9d00');
+      addFever(15);
+      // near-miss slow-mo: savor the thread
+      G.timeScale = 0.45; G.slowT = 0.35;
+      buzz(20);
+    } else {
+      addFever(8);
+      if (G.streak >= 3) popup('x' + G.streak + ' COMBO', '#ff2fd6');
+    }
+    pts = Math.round(pts * scoreMult());
     G.score += pts;
     G.rowIndex = Math.max(G.rowIndex, i);
     Sfx.bounce(G.streak);
+    buzz(10);
     burst(G.W / 2, row.y - G.camY, PALETTE[b.color].main, 8);
+    missionEv('score', G.score);
+    missionEv('row', G.rowIndex + 1);
+    missionEv('combo', G.streak);
+    checkRival();
     updateHUD();
     if (G.playMode === 'levels' && i === G.rows.length - 1) levelComplete();
   } else {
@@ -542,6 +776,7 @@ function onCrossRow(row, i) {
     if (row.color === -1 || row.color === b.color) {
       b.y = row.y; b.vy = -PHYS.bounceV;
       if (G.streak > 0) G.streak = 0;
+      addFever(-8); // bouncing without passing cools the meter
       Sfx.bounce(0);
       updateHUD();
     } else {
@@ -769,6 +1004,27 @@ function drawCoin(c) {
   ctx.restore();
 }
 
+function drawPowerup(p) {
+  if (p.taken) return;
+  const sy = p.y - Game.camY;
+  if (sy < -40 || sy > Game.H + 40) return;
+  const th = p.localA + Game.rot;
+  const [x, y] = ringPt(th, sy);
+  const meta = PU_META[p.kind];
+  const bob = Math.sin(Game.time * 4 + p.y) * 6;
+  ctx.save();
+  ctx.translate(x, y + bob);
+  ctx.shadowBlur = 18; ctx.shadowColor = meta.color;
+  ctx.fillStyle = 'rgba(5,5,20,.85)';
+  ctx.beginPath(); ctx.arc(0, 0, 17, 0, TAU); ctx.fill();
+  ctx.strokeStyle = meta.color; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(0, 0, 17, 0, TAU); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.font = '17px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(meta.emoji, 0, 1);
+  ctx.restore();
+}
+
 function drawBall() {
   if (Game.mode === 'dying' || Game.mode === 'gameover') return;
   const x = Game.W / 2, y = Game.ballScreenY;
@@ -837,6 +1093,18 @@ function drawBall() {
     ctx.beginPath(); ctx.arc(x, y, r + 12, 0, TAU); ctx.stroke();
     ctx.setLineDash([]);
   }
+  // shield powerup: solid cyan hex ring while armed
+  if (Game.puShield && Game.mode === 'playing') {
+    ctx.strokeStyle = `rgba(125,249,255,${0.65 + 0.3 * Math.sin(Game.time * 6)})`;
+    ctx.lineWidth = 3.5; ctx.shadowBlur = 14; ctx.shadowColor = '#7df9ff';
+    ctx.beginPath();
+    for (let i = 0; i <= 6; i++) {
+      const a = i / 6 * TAU + Game.time * 0.8;
+      const px = x + Math.cos(a) * (r + 16), py = y + Math.sin(a) * (r + 16);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.stroke(); ctx.shadowBlur = 0;
+  }
 }
 
 function render() {
@@ -851,7 +1119,22 @@ function render() {
   for (const r of rows) drawRow(r);
   for (const gt of G.gates) drawGate(gt);
   for (const c of G.coins) drawCoin(c);
+  for (const p of G.powerups) drawPowerup(p);
   drawBall();
+  // fever gold vignette while active
+  if (G.feverT > 0) {
+    const vg = ctx.createRadialGradient(G.W / 2, G.H / 2, G.H * 0.25, G.W / 2, G.H / 2, G.H * 0.75);
+    const a = 0.22 + 0.08 * Math.sin(G.time * 8);
+    vg.addColorStop(0, 'rgba(255,215,0,0)');
+    vg.addColorStop(1, `rgba(255,180,0,${a})`);
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, G.W, G.H);
+  }
+  // gold flash on fever trigger
+  if (G.feverFlash > 0) {
+    ctx.fillStyle = `rgba(255,215,0,${G.feverFlash * 0.25})`;
+    ctx.fillRect(0, 0, G.W, G.H);
+  }
   // particles
   for (const p of G.particles) {
     ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
@@ -918,8 +1201,11 @@ function toast(msg) {
 }
 function updateHUD() {
   $('hud-score').textContent = Game.score;
-  $('hud-level').textContent = Game.playMode === 'endless' ? 'ENDLESS · ' + Math.max(0, Game.rowIndex + 1) + ' ROWS'
-    : Game.playMode === 'rush' ? 'RUSH · ' + fmtTime(Game.timeLeft) : 'LEVEL ' + Game.level;
+  const rows = Math.max(0, Game.rowIndex + 1) + ' ROWS';
+  $('hud-level').textContent = Game.playMode === 'endless' ? 'ENDLESS · ' + rows
+    : Game.playMode === 'rush' ? 'RUSH · ' + fmtTime(Game.timeLeft)
+    : Game.playMode === 'daily' ? '📅 DAILY · ' + rows + ' · 🔥' + Save.data.daily.streak
+    : 'LEVEL ' + Game.level;
   $('coin-count').textContent = Save.data.coins;
   // "you are this color" chip — the core of the color mechanic, always visible
   const c = PALETTE[Game.ball.color];
@@ -933,9 +1219,29 @@ function updateHUD() {
 }
 
 function refreshMenu() {
-  const best = Math.max(Save.data.best.endless, Save.data.best.rush || 0, ...Object.values(Save.data.best.levels), 0);
+  const best = Math.max(Save.data.best.endless, Save.data.best.rush || 0, ...Object.values(Save.data.best.levels), ...Object.values(Save.data.daily.best), 0);
   $('menu-best').textContent = best;
   $('menu-coins').textContent = Save.data.coins;
+  // daily button sub: streak + today's best
+  const d = Save.data.daily, today = dayStr();
+  $('daily-sub').textContent = d.streak > 0 ? `🔥${d.streak} day streak · best today ${d.best[today] || 0}` : 'same tower for everyone · new every day';
+  // missions panel
+  ensureMissions();
+  const mp = $('missions');
+  mp.innerHTML = '<div class="missions-title">🎯 MISSIONS</div>' + Save.data.missions.map(m => {
+    const def = missionDef(m.id);
+    if (!def) return '';
+    const pct = Math.min(100, Math.round((m.progress || 0) / def.target * 100));
+    return `<div class="mission"><div class="mission-desc">${def.desc}</div>` +
+      `<div class="mission-bar"><div style="width:${pct}%"></div></div>` +
+      `<div class="mission-reward">+${def.reward}🪙</div></div>`;
+  }).join('');
+  // rival banner
+  const rb = $('rival-banner');
+  if (Game.rival && !Game.rival._dismissed) {
+    rb.classList.remove('hidden');
+    $('rival-text').textContent = `🎯 RIVAL ${Game.rival.score.toLocaleString()} (${Game.rival.mode.toUpperCase()}) — beat it!`;
+  } else rb.classList.add('hidden');
 }
 function goMenu() {
   Game.mode = 'menu';
@@ -952,8 +1258,10 @@ function showGameOver() {
   $('go-score').textContent = Game.score;
   const best = Game.playMode === 'endless' ? Save.data.best.endless
     : Game.playMode === 'rush' ? Save.data.best.rush
+    : Game.playMode === 'daily' ? (Save.data.daily.best[dayStr()] || 0)
     : (Save.data.best.levels[Game.level] || 0);
   $('go-best').textContent = best;
+  $('go-mode').textContent = Game.playMode === 'daily' ? '📅 DAILY · 🔥' + Save.data.daily.streak + ' DAY STREAK' : '';
   $('go-coins').textContent = '+' + Game.coinsRun;
   $('go-newbest').classList.toggle('hidden', !Game.newBest);
   $('btn-revive').disabled = Game.revived;
@@ -1072,6 +1380,15 @@ function wire() {
   $('btn-levels').onclick = () => { Sfx.init(); Sfx.click(); renderLevels(); showScreen('levels'); };
   $('btn-endless').onclick = () => { Sfx.init(); Sfx.click(); startRun('endless'); };
   $('btn-rush').onclick = () => { Sfx.init(); Sfx.click(); startRun('rush'); };
+  $('btn-daily').onclick = () => { Sfx.init(); Sfx.click(); startRun('daily'); };
+  $('rival-dismiss').onclick = (e) => { e.stopPropagation(); Sfx.click(); Game.rival._dismissed = true; refreshMenu(); };
+  $('btn-share').onclick = () => {
+    Sfx.click();
+    const url = location.origin + location.pathname + '?rival=' + Game.score + '&rmode=' + Game.playMode;
+    const done = () => toast('🔗 Rival link copied — send it!');
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done).catch(() => toast(url));
+    else toast(url);
+  };
   $('btn-shop').onclick = () => { Sfx.click(); renderShop(); showScreen('shop'); };
   $('btn-how').onclick = () => { Sfx.click(); showScreen('howto'); };
   $('btn-how-back').onclick = () => { Sfx.click(); goMenu(); };
@@ -1123,6 +1440,24 @@ function loop(now) {
       if (s !== Game._lastRushSec) { Game._lastRushSec = s; updateHUD(); }
       if (Game.timeLeft <= 0) rushComplete();
     }
+    // fever meter + powerup timers refresh (cheap DOM writes, only while playing)
+    if (Game.mode === 'playing') {
+      const fw = $('fever-fill');
+      if (fw) {
+        const pct = Game.feverT > 0 ? (Game.feverT / 10 * 100) : Game.fever;
+        fw.style.width = pct + '%';
+        fw.classList.toggle('active', Game.feverT > 0);
+        $('fever-label').textContent = Game.feverT > 0 ? 'FEVER ' + Math.ceil(Game.feverT) + 's' : 'FEVER';
+      }
+      const pi = $('pu-icons');
+      if (pi) {
+        let html = '';
+        if (Game.puShield) html += '<span title="Shield">🛡</span>';
+        if (Game.puMagnet > 0) html += '<span>🧲' + Math.ceil(Game.puMagnet) + '</span>';
+        if (Game.puStar > 0) html += '<span>⭐' + Math.ceil(Game.puStar) + '</span>';
+        if (html !== pi._last) { pi.innerHTML = html; pi._last = html; }
+      }
+    }
   } else if (Game.mode === 'menu') {
     Game.time += rdt;
     Game.rot += rdt * 0.5; // attract-mode spin
@@ -1134,6 +1469,12 @@ function loop(now) {
 /* ---------------- Boot ---------------- */
 Save.load();
 Sfx.muted = !!Save.data.muted;
+// rival challenge link: ?rival=5200&rmode=endless
+try {
+  const q = new URLSearchParams(location.search);
+  const r = parseInt(q.get('rival'), 10);
+  if (r > 0) Game.rival = { score: r, mode: q.get('rmode') || 'endless', beaten: false };
+} catch (e) {}
 resize();
 wire();
 $('btn-mute').textContent = Save.data.muted ? '🔇' : '🔊';

@@ -103,3 +103,33 @@ h2 { font-size: 22px; letter-spacing: 2px; margin-bottom: 16px; color: #0ff; tex
 #toast { position: absolute; bottom: 12%; left: 50%; transform: translateX(-50%); z-index: 30;
   background: rgba(0,0,0,.8); border: 1px solid #0ff; padding: 10px 20px; border-radius: 24px;
   font-weight: 700; font-size: 15px; pointer-events: none; white-space: nowrap; }
+
+/* ---------- v6: fever / powerups / missions / rival ---------- */
+#fever-wrap { position: relative; margin-top: 6px; width: 150px; height: 14px; border-radius: 8px;
+  background: rgba(255,255,255,.08); border: 1px solid rgba(255,215,0,.45); overflow: hidden; }
+#fever-fill { height: 100%; width: 0%; border-radius: 8px;
+  background: linear-gradient(90deg, #ff9d00, #ffd700); box-shadow: 0 0 10px rgba(255,200,0,.7);
+  transition: width .2s; }
+#fever-fill.active { animation: feverpulse .5s infinite alternate; }
+@keyframes feverpulse { from { filter: brightness(1); } to { filter: brightness(1.5); } }
+#fever-label { position: absolute; inset: 0; font-size: 9px; font-weight: 800; letter-spacing: 1.5px;
+  display: flex; align-items: center; justify-content: center; color: #ffe9a3; text-shadow: 0 1px 2px #000; }
+#pu-icons { position: absolute; top: 120px; right: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 5; }
+#pu-icons span { background: rgba(0,0,0,.55); border: 1px solid #7df9ff; border-radius: 12px;
+  padding: 4px 8px; font-size: 15px; font-weight: 800; color: #fff; }
+.big-btn.daily { background: linear-gradient(90deg, #00c9a7, #00e5ff); box-shadow: 0 0 18px rgba(0,220,200,.5); color: #04263a; }
+#missions { margin: 12px 0 4px; text-align: left; }
+.missions-title { font-size: 12px; font-weight: 800; letter-spacing: 2px; color: #ffd700; margin-bottom: 6px; }
+.mission { margin-bottom: 8px; }
+.mission-desc { font-size: 12.5px; font-weight: 600; margin-bottom: 3px; opacity: .92; }
+.mission-bar { height: 6px; border-radius: 4px; background: rgba(255,255,255,.1); overflow: hidden; }
+.mission-bar div { height: 100%; background: linear-gradient(90deg, #ffd700, #ff9d00); border-radius: 4px; transition: width .3s; }
+.mission-reward { font-size: 11px; color: #ffd700; font-weight: 700; }
+#rival-banner { display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: linear-gradient(90deg, rgba(255,47,214,.18), rgba(255,210,63,.18));
+  border: 1px solid #ff2fd6; border-radius: 12px; padding: 9px 12px; margin-bottom: 12px;
+  font-size: 13.5px; font-weight: 800; animation: rivalpulse 1.2s infinite alternate; }
+@keyframes rivalpulse { from { box-shadow: 0 0 6px rgba(255,47,214,.3); } to { box-shadow: 0 0 20px rgba(255,47,214,.7); } }
+#rival-dismiss { background: none; border: none; color: #fff; font-size: 14px; cursor: pointer; opacity: .7; }
+.go-mode { font-size: 13px; font-weight: 800; color: #00e5ff; letter-spacing: 1px; margin-top: 6px; }
+.go-mode:empty { display: none; }
