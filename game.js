@@ -516,7 +516,9 @@ function update(dt) {
 function onCrossRow(row, i) {
   const G = Game, b = G.ball;
   const rel = angDist(0, norm(row.gapC + G.rot));
-  if (rel < row.gapH - 0.03) {
+  // The golden finish ring (no game color) is the goal line: the ball always
+  // drops through it — you can never get stuck bouncing on the finish.
+  if (row.color === -1 || rel < row.gapH - 0.03) {
     // PASS THROUGH the gap
     G.streak++;
     G.bestStreak = Math.max(G.bestStreak, G.streak);
@@ -887,8 +889,8 @@ window.addEventListener('pointermove', e => {
   Game.rotVel = clamp(lerp(Game.rotVel, dth / dt, 0.5), -PHYS.maxRotVel, PHYS.maxRotVel);
   lastX = e.clientX; lastT = now;
 });
-window.addEventListener('pointerup', () => { dragging = false; });
-window.addEventListener('pointercancel', () => { dragging = false; });
+window.addEventListener('pointerup', () => { dragging = false; Game.rotVel = 0; });
+window.addEventListener('pointercancel', () => { dragging = false; Game.rotVel = 0; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 window.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') Game.keyDir = -1;
@@ -896,7 +898,7 @@ window.addEventListener('keydown', e => {
   if (e.key === 'Escape' && Game.mode === 'playing') pauseGame();
 });
 window.addEventListener('keyup', e => {
-  if ((e.key === 'ArrowLeft' && Game.keyDir === -1) || (e.key === 'ArrowRight' && Game.keyDir === 1)) Game.keyDir = 0;
+  if ((e.key === 'ArrowLeft' && Game.keyDir === -1) || (e.key === 'ArrowRight' && Game.keyDir === 1)) { Game.keyDir = 0; Game.rotVel = 0; }
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && Game.mode === 'playing') pauseGame();
