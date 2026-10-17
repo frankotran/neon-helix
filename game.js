@@ -86,7 +86,14 @@ const Save = {
       themes: { owned: ['midnight'], sel: 'midnight' },
       muted: false, runs: 0,
       missions: null, // 3 active: [{id, progress}]
-      daily: { last: '', streak: 0, best: {} } // best: {YYYY-MM-DD: score}
+      daily: { last: '', streak: 0, best: {}, plays: 0 }, // best: {YYYY-MM-DD: score}
+      // v7
+      login: { last: '', streak: 0, claimed: '' },
+      xp: 0, coinsEarned: 0,
+      trophies: [], // trophy ids
+      boost: null, // pending rewarded run starter: 'shield' | 'magnet'
+      symbols: false, // color-blind symbol mode
+      shieldSaves: 0
     };
   },
   load() {
@@ -181,6 +188,94 @@ function missionEv(ev, val, mode) {
 /* ---------------- Haptics ---------------- */
 function buzz(p) { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} }
 
+/* ---------------- v7: ranks / trophies / login ---------------- */
+const RANKS = [
+  { xp: 0, name: 'ROOKIE' },
+  { xp: 500, name: 'SPINNER' },
+  { xp: 1500, name: 'THREADER' },
+  { xp: 4000, name: 'NEON' },
+  { xp: 9000, name: 'HELIX' },
+  { xp: 20000, name: 'HELIX GOD' }
+];
+function rankFor(xp) {
+  let r = 0;
+  for (let i = 0; i < RANKS.length; i++) if (xp >= RANKS[i].xp) r = i;
+  return r;
+}
+function addCoins(n) {
+  Save.data.coins += n;
+  Save.data.coinsEarned = (Save.data.coinsEarned || 0) + n;
+  if (Save.data.coinsEarned >= 500) awardTrophy('coins500');
+}
+function awardXP(n) {
+  const before = rankFor(Save.data.xp);
+  Save.data.xp += n;
+  Save.save();
+  const after = rankFor(Save.data.xp);
+  if (after > before) {
+    addCoins(150);
+    Save.save();
+    toast('⬆ RANK UP: ' + RANKS[after].name + '!  +150🪙');
+    Sfx.fever();
+    buzz([40, 40, 80]);
+    for (let i = 0; i < 60; i++) burst(rand(0, Game.W), rand(0, Game.H * 0.5), '#00f0ff', 24);
+  }
+}
+const TROPHIES = [
+  { id: 'firstblood', name: 'Shattered', desc: 'Die for the first time' },
+  { id: 'fever1', name: 'Fever Pitch', desc: 'Trigger your first FEVER' },
+  { id: 'perfect10', name: 'Thread Master', desc: '10 PERFECT gaps in one run' },
+  { id: 'rows50', name: 'Deep Diver', desc: 'Pass 50 rows in one run' },
+  { id: 'coins500', name: 'Tycoon', desc: 'Earn 500 coins total' },
+  { id: 'repaint10', name: 'Chameleon', desc: 'Repaint 10× in one run' },
+  { id: 'streak7', name: 'Devoted', desc: '7-day login streak' },
+  { id: 'rival1', name: 'Giant Slayer', desc: 'Beat a rival' },
+  { id: 'rush2000', name: 'Speed Demon', desc: 'Score 2,000 in one RUSH' },
+  { id: 'daily5', name: 'Regular', desc: 'Play 5 Daily Drops' },
+  { id: 'shield2', name: 'Untouchable', desc: 'Block 2 deaths with shields' },
+  { id: 'level5', name: 'Climber', desc: 'Clear level 5' }
+];
+function awardTrophy(id) {
+  if (Save.data.trophies.includes(id)) return;
+  const t = TROPHIES.find(t => t.id === id);
+  if (!t) return;
+  Save.data.trophies.push(id);
+  addCoins(30);
+  Save.save();
+  toast('🏆 ' + t.name + '!  +30🪙');
+  Sfx.win();
+  buzz([30, 30, 60]);
+  for (let i = 0; i < 40; i++) burst(rand(0, Game.W), rand(0, Game.H * 0.4), '#ffd700', 20);
+}
+const LOGIN_REWARDS = [25, 40, 60, 90, 130, 170, 250];
+function checkLogin() {
+  const l = Save.data.login, today = dayStr();
+  if (l.last === today) return false; // already handled today
+  const yest = dayStr(new Date(Date.now() - 864e5));
+  l.streak = (l.last === yest) ? l.streak + 1 : 1;
+  if (l.streak > 7) l.streak = 1; // cycle restarts after day 7 claimed
+  l.last = today;
+  Save.save();
+  if (l.streak >= 7) awardTrophy('streak7');
+  return true; // show claim overlay
+}
+function claimLogin() {
+  const l = Save.data.login;
+  if (l.claimed === dayStr()) return;
+  l.claimed = dayStr();
+  const reward = LOGIN_REWARDS[Math.min(l.streak, 7) - 1] || 25;
+  addCoins(reward);
+  let extra = '';
+  if (l.streak >= 7) {
+    const tr = Save.data.trails;
+    if (!tr.owned.includes('ember')) { tr.owned.push('ember'); extra = ' + 🔥 Ember trail!'; }
+    l.streak = 0; // restart cycle next visit
+  }
+  Save.save();
+  toast('🎁 Day ' + Math.min(l.streak || 7, 7) + ': +' + reward + '🪙' + extra);
+  Sfx.win();
+}
+
 /* ---------------- Ads ----------------
    ADMOB SWAP POINTS: in the Capacitor native build, replace the body of
    maybeInterstitial() with AdMob.showInterstitial() and rewarded() with
@@ -202,9 +297,9 @@ const Ads = {
     } else cb();
   },
   rewarded(placement, cb) {
-    // placement: 'revive' | 'coins2x' | 'skin'
+    // placement: 'revive' | 'coins2x' | 'skin' | 'boost'
     // ADMOB: AdMob.showRewardedAd({placement}).then(r => cb(r.earned)).catch(() => cb(false))
-    const returnTo = placement === 'coins2x' ? 'leveldone' : placement === 'skin' ? 'shop' : null;
+    const returnTo = placement === 'coins2x' ? 'leveldone' : placement === 'skin' ? 'shop' : placement === 'boost' ? 'menu' : null;
     showAdCard(true, returnTo, cb);
   }
 };
@@ -215,6 +310,7 @@ const PALETTE = [
   { name: 'magenta', main: '#ff2fd6', dim: 'rgba(255,47,214,.25)' },
   { name: 'gold', main: '#ffd23f', dim: 'rgba(255,210,63,.25)' }
 ];
+const SYMBOLS = ['●', '▲', '■']; // color-blind shapes per color
 const BALLS = [
   { id: 'orb', name: 'Neon Orb', price: 0 },
   { id: 'comet', name: 'Comet', price: 150 },
@@ -231,7 +327,8 @@ const TRAILS = [
   { id: 'bubbles', name: 'Bubbles', price: 200 },
   { id: 'stars', name: 'Stars', price: 350 },
   { id: 'lightning', name: 'Voltage', price: 600 },
-  { id: 'rainbow', name: 'Rainbow', price: 900 }
+  { id: 'rainbow', name: 'Rainbow', price: 900 },
+  { id: 'ember', name: 'Ember', price: 0, exclusive: 'login7' } // 7-day login streak reward only
 ];
 const THEMES = [
   { id: 'midnight', name: 'Midnight', price: 0, bg: ['#0a0a1f', '#160a2e'], grid: 'rgba(0,240,255,.06)', star: '#9df' },
@@ -306,6 +403,7 @@ function genLevel(n) {
         gapC = norm(gapC + sr(-1.2, 1.2));
         if (k === 0) firstGap = gapC;
         rows.push({ y: i * PHYS.rowSpacing, gapC, gapH, color: s.color, reds: [] });
+        rows[rows.length - 1].golden = srp(0.06); // golden gap: 3x points
         if (srp(0.4)) coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.5, 0.5)), taken: false });
         maybePowerup(i * PHYS.rowSpacing - PHYS.rowSpacing / 2, gapC);
       }
@@ -353,6 +451,7 @@ function genLevel(n) {
       if (angDist(rc, gapC) > gapH + rh + 0.25) row.reds.push({ a0: rc - rh, a1: rc + rh });
     }
     rows.push(row);
+    row.golden = !isLast && srp(0.06); // golden gap: 3x points
     if (!isLast && srp(0.4)) {
       coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.5, 0.5)), taken: false });
     }
@@ -383,6 +482,7 @@ function endlessRow(depth, prevGapC) {
     color = Game.eColor;
   }
   const row = { y: depth * PHYS.rowSpacing, gapC, gapH, color, reds: [] };
+  row.golden = srp(0.06); // golden gap: 3x points
   if (depth > 8 && srp(Math.min(0.5, 0.1 + depth * 0.006))) {
     const rh = sr(0.28, 0.5);
     const rc = norm(gapC + Math.PI + sr(-0.9, 0.9));
@@ -409,6 +509,11 @@ function startRun(playMode, level) {
   Game.fever = 0; Game.feverT = 0; Game.feverFlash = 0;
   Game.powerups = []; Game.puShield = false; Game.puMagnet = 0; Game.puStar = 0;
   Game.mRun = {};
+  Game.tPerfect = 0; Game.tRepaint = 0; // per-run trophy counters
+  // rewarded run-starter boost (earned from the menu)
+  if (Save.data.boost === 'shield') { Game.puShield = true; setTimeout(() => toast('🛡 Shield armed for this run!'), 600); }
+  else if (Save.data.boost === 'magnet') { Game.puMagnet = 8; setTimeout(() => toast('🧲 Magnet armed for this run!'), 600); }
+  Save.data.boost = null;
   Game.timeLeft = playMode === 'rush' ? 60 : 0;
   // Daily Drop: seeded tower, same for everyone today; streak bookkeeping
   SRNG = null;
@@ -422,6 +527,9 @@ function startRun(playMode, level) {
       Save.save();
     }
     missionEv('daily');
+  Save.data.daily.plays++;
+  if (Save.data.daily.plays >= 5) awardTrophy('daily5');
+  Save.save();
   }
   const g = playMode === 'levels' ? genLevel(Game.level) : null;
   if (g) { Game.rows = g.rows; Game.gates = g.gates; Game.coins = g.coins; Game.powerups = g.powerups; }
@@ -455,6 +563,9 @@ function endRunDeath(cause) {
     burst(Game.W / 2, Game.ballScreenY, '#7df9ff', 30);
     popup('SHIELD SAVED YOU!', '#7df9ff');
     Sfx.revive(); buzz(60);
+    Save.data.shieldSaves = (Save.data.shieldSaves || 0) + 1;
+    if (Save.data.shieldSaves >= 2) awardTrophy('shield2');
+    Save.save();
     updateHUD();
     return;
   }
@@ -465,6 +576,7 @@ function endRunDeath(cause) {
   burst(Game.W / 2, Game.ballScreenY, PALETTE[Game.ball.color].main, 46);
   Sfx.shatter();
   buzz([60, 40, 60]);
+  awardTrophy('firstblood');
 }
 
 function finishDeath() {
@@ -484,6 +596,7 @@ function finishDeath() {
   }
   Save.data.coins += Game.coinsRun;
   Save.save();
+  awardXP(Math.floor(Game.score / 10) + Math.max(0, Game.rowIndex + 1));
   // interstitial policy lives in Ads.maybeInterstitial
   Ads.maybeInterstitial(() => showGameOver());
 }
@@ -500,6 +613,8 @@ function levelComplete() {
   Game.newBest = Game.score > prev;
   if (Game.newBest) Save.data.best.levels[Game.level] = Game.score;
   Save.save();
+  awardXP(Math.floor(Game.score / 10) + Game.level * 10);
+  if (Game.level >= 5) awardTrophy('level5');
   for (let i = 0; i < 60; i++)
     burst(rand(0, Game.W), rand(0, Game.H * 0.6), PALETTE[randi(0, 2)].main, 30);
   showLevelDone(bonus);
@@ -516,6 +631,8 @@ function rushComplete() {
   Game.newBest = Game.score > prev;
   if (Game.newBest) Save.data.best.rush = Game.score;
   Save.save();
+  awardXP(Math.floor(Game.score / 10) + 20);
+  if (Game.score >= 2000) awardTrophy('rush2000');
   for (let i = 0; i < 60; i++)
     burst(rand(0, Game.W), rand(0, Game.H * 0.6), PALETTE[randi(0, 2)].main, 30);
   showLevelDone(bonus);
@@ -612,6 +729,8 @@ function update(dt) {
             popup('REPAINTED!', PALETTE[b.color].main);
             addFever(10);
             missionEv('repaint');
+            Game.tRepaint++;
+            if (Game.tRepaint >= 10) awardTrophy('repaint10');
             updateHUD(); // refresh the "you are this color" chip immediately
           }
         }
@@ -686,6 +805,7 @@ function triggerFever() {
   Sfx.fever();
   buzz(80);
   missionEv('fever');
+  awardTrophy('fever1');
   for (let i = 0; i < 40; i++) burst(rand(0, G.W), rand(0, G.H * 0.5), '#ffd700', 22);
 }
 function scoreMult() {
@@ -727,6 +847,7 @@ function checkRival() {
     Sfx.win();
     buzz(80);
     toast('You beat the rival score of ' + rv.score + '!');
+    awardTrophy('rival1');
   }
 }
 
@@ -745,6 +866,8 @@ function onCrossRow(row, i) {
       pts = Math.round(pts * 1.5);
       popup('PERFECT +' + pts, '#ffd700'); Sfx.perfect();
       addFever(34); missionEv('perfect'); buzz([15, 30, 15]);
+      Game.tPerfect++;
+      if (Game.tPerfect >= 10) awardTrophy('perfect10');
     } else if (rel > row.gapH * 0.8) {
       pts += 15; popup('CLOSE! +' + pts, '#ff9d00');
       addFever(15);
@@ -756,6 +879,12 @@ function onCrossRow(row, i) {
       if (G.streak >= 3) popup('x' + G.streak + ' COMBO', '#ff2fd6');
     }
     pts = Math.round(pts * scoreMult());
+    if (row.golden) { // golden gap jackpot: 3x
+      pts *= 3;
+      popup('GOLDEN +' + pts, '#ffd700');
+      Sfx.power();
+      burst(G.W / 2, row.y - G.camY, '#ffd700', 24);
+    }
     G.score += pts;
     G.rowIndex = Math.max(G.rowIndex, i);
     Sfx.bounce(G.streak);
@@ -764,6 +893,7 @@ function onCrossRow(row, i) {
     missionEv('score', G.score);
     missionEv('row', G.rowIndex + 1);
     missionEv('combo', G.streak);
+    if (G.rowIndex + 1 >= 50) awardTrophy('rows50');
     checkRival();
     updateHUD();
     if (G.playMode === 'levels' && i === G.rows.length - 1) levelComplete();
@@ -803,7 +933,7 @@ function updateParticles(dt) {
   // ball trail
   const tid = Save.data.trails.sel;
   if (Game.mode === 'playing' && tid !== 'none' && Math.random() < 0.7) {
-    const cols = { sparkle: ['#fff', '#ffd700'], bubbles: ['#9df', '#0ff'], stars: ['#ffd700', '#fff'], lightning: ['#ff0', '#0ff'], rainbow: ['#f00', '#0f0', '#00f', '#ff0', '#f0f'] };
+    const cols = { sparkle: ['#fff', '#ffd700'], bubbles: ['#9df', '#0ff'], stars: ['#ffd700', '#fff'], lightning: ['#ff0', '#0ff'], rainbow: ['#f00', '#0f0', '#00f', '#ff0', '#f0f'], ember: ['#ff9d00', '#ff4400', '#ffdd55'] };
     const c = cols[tid] || ['#fff'];
     Game.particles.push({ x: Game.W / 2 + rand(-6, 6), y: Game.ballScreenY + rand(-6, 6), vx: rand(-30, 30), vy: rand(20, 90), life: 0.5, max: 0.5, color: c[randi(0, c.length - 1)], size: rand(2, 4) });
   }
@@ -937,6 +1067,10 @@ function drawRow(row) {
     if (angDist(mid, gapW) < gapH - 1e-6) continue; // the gap: draw nothing
     const front = Math.abs(mid) < Math.PI / 2;
     strokeArc(a0, a1, sy, front ? base : dark, RING, front ? 12 : 0);
+    if (row.golden && front) { // golden gap: pulsing gold shimmer on the solid arc
+      const ga = 0.30 + 0.20 * Math.sin(Game.time * 6);
+      strokeArc(a0, a1, sy, `rgba(255,215,0,${ga.toFixed(3)})`, RING * 0.5, 16);
+    }
   }
   // glowing caps on the gap edges so the opening reads at speed
   // (skipped on the near-full-circle finish ring)
@@ -945,6 +1079,18 @@ function drawRow(row) {
     const [gx, gy] = ringPt(w, sy);
     ctx.fillStyle = base; ctx.shadowBlur = 12; ctx.shadowColor = base;
     ctx.beginPath(); ctx.arc(gx, gy, 5, 0, TAU); ctx.fill(); ctx.shadowBlur = 0;
+  }
+  // symbol mode: paint the color's shape on the ring (rotates with the tower)
+  if (Save.data.symbols && row.color >= 0) {
+    ctx.fillStyle = 'rgba(0,0,0,.6)';
+    ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const la of [-0.75, 0, 0.75]) {
+      const w = norm(la + Game.rot);
+      if (Math.abs(w) > Math.PI / 2 - 0.15) continue; // front only
+      if (angDist(w, gapW) < gapH + 0.1) continue; // not in the gap
+      const [sx2, sy2] = ringPt(w, sy);
+      ctx.fillText(SYMBOLS[row.color], sx2, sy2);
+    }
   }
   // red spike sectors (front half only matters for landing, but draw all)
   for (const s of row.reds) {
@@ -981,7 +1127,7 @@ function drawGate(gt) {
   ctx.restore(); ctx.shadowBlur = 0;
   ctx.fillStyle = c; ctx.globalAlpha = 0.95;
   ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText('◈ REPAINT ◈', x, y + 44);
+  ctx.fillText('◈ REPAINT' + (Save.data.symbols ? ' ' + SYMBOLS[gt.color] : '') + ' ◈', x, y + 44);
   ctx.globalAlpha = 1;
 }
 
@@ -1188,7 +1334,7 @@ document.addEventListener('visibilitychange', () => {
 
 /* ---------------- UI ---------------- */
 const $ = id => document.getElementById(id);
-const screens = ['menu', 'levels', 'shop', 'howto', 'pause', 'gameover', 'leveldone', 'adcard'];
+const screens = ['menu', 'levels', 'shop', 'howto', 'pause', 'gameover', 'leveldone', 'adcard', 'trophies', 'login'];
 function showScreen(id) {
   for (const s of screens) $(s).classList.toggle('hidden', s !== id);
 }
@@ -1209,7 +1355,7 @@ function updateHUD() {
   $('coin-count').textContent = Save.data.coins;
   // "you are this color" chip — the core of the color mechanic, always visible
   const c = PALETTE[Game.ball.color];
-  $('hud-cname').textContent = c.name.toUpperCase();
+  $('hud-cname').textContent = (Save.data.symbols ? SYMBOLS[Game.ball.color] + ' ' : '') + c.name.toUpperCase();
   $('hud-dot').style.background = c.main;
   $('hud-dot').style.boxShadow = '0 0 8px ' + c.main;
   $('hud-color').style.borderColor = c.main;
@@ -1242,6 +1388,45 @@ function refreshMenu() {
     rb.classList.remove('hidden');
     $('rival-text').textContent = `🎯 RIVAL ${Game.rival.score.toLocaleString()} (${Game.rival.mode.toUpperCase()}) — beat it!`;
   } else rb.classList.add('hidden');
+  // v7: rank + trophies + symbols + boosts
+  const ri = rankFor(Save.data.xp);
+  $('rank-badge').textContent = '⬆ ' + RANKS[ri].name + ' · ' + Save.data.xp + ' XP';
+  const next = RANKS[ri + 1];
+  $('rank-fill').style.width = next ? Math.min(100, Math.round(Save.data.xp / next.xp * 100)) + '%' : '100%';
+  $('trophy-count').textContent = Save.data.trophies.length + '/' + TROPHIES.length;
+  $('symbols-state').textContent = Save.data.symbols ? 'ON' : 'OFF';
+  $('btn-boost-shield').textContent = Save.data.boost === 'shield' ? '🛡 ARMED ✓' : '🛡 BOOST 📺';
+  $('btn-boost-magnet').textContent = Save.data.boost === 'magnet' ? '🧲 ARMED ✓' : '🧲 BOOST 📺';
+}
+
+function renderTrophies() {
+  $('trophy-list').innerHTML = TROPHIES.map(t => {
+    const got = Save.data.trophies.includes(t.id);
+    return `<div class="trophy ${got ? 'got' : ''}"><div class="t-emoji">${got ? '🏆' : '🔒'}</div>` +
+      `<div><div class="t-name">${t.name}</div><div class="t-desc">${t.desc} · +30🪙</div></div></div>`;
+  }).join('');
+}
+
+function renderLogin() {
+  const l = Save.data.login;
+  $('login-day').textContent = Math.min(l.streak, 7);
+  $('login-grid').innerHTML = LOGIN_REWARDS.map((r, i) => {
+    const day = i + 1;
+    const cls = day < l.streak ? 'done' : day === l.streak ? 'today' : '';
+    return `<div class="login-cell ${cls}"><div class="d">DAY ${day}</div><div class="r">${day === 7 ? r + '🪙<br>🔥' : r + '🪙'}</div></div>`;
+  }).join('');
+}
+
+function armBoost(kind) {
+  Sfx.click();
+  if (Save.data.boost === kind) { toast('Already armed for your next run!'); return; }
+  Ads.rewarded('boost', earned => {
+    if (earned) {
+      Save.data.boost = kind; Save.save();
+      refreshMenu();
+      toast((kind === 'shield' ? '🛡 Shield' : '🧲 Magnet') + ' armed for your next run!');
+    }
+  });
 }
 function goMenu() {
   Game.mode = 'menu';
@@ -1349,10 +1534,11 @@ function renderShop() {
     if (shopTab === 'balls') preview = `<div class="preview"><div style="width:30px;height:30px;border-radius:50%;background:radial-gradient(circle at 35% 35%, #fff, ${PALETTE[0].main});box-shadow:0 0 12px ${PALETTE[0].main}"></div></div>`;
     else if (shopTab === 'trails') preview = `<div class="preview"><div style="color:#ffd700;font-size:22px">${it.id === 'none' ? '—' : '✦✦✦'}</div></div>`;
     else { const th = THEMES.find(t => t.id === it.id); preview = `<div class="preview"><div style="width:44px;height:30px;border-radius:8px;background:linear-gradient(160deg,${th.bg[0]},${th.bg[1]});border:1px solid #fff3"></div></div>`; }
-    d.innerHTML = `${preview}<div class="name">${it.name}</div><div class="price">${owned ? (sel ? 'EQUIPPED' : 'TAP TO USE') : '🪙 ' + it.price}</div>`;
+    d.innerHTML = `${preview}<div class="name">${it.name}</div><div class="price">${owned ? (sel ? 'EQUIPPED' : 'TAP TO USE') : it.exclusive ? '🔥 DAY 7 LOGIN' : '🪙 ' + it.price}</div>`;
     d.onclick = () => {
       Sfx.click();
       if (st.owned.includes(it.id)) { st.sel = it.id; Save.save(); renderShop(); }
+      else if (it.exclusive) { toast('Earn this with a 7-day login streak!'); }
       else if (Save.data.coins >= it.price) {
         Save.data.coins -= it.price; st.owned.push(it.id); st.sel = it.id; Save.save();
         renderShop(); refreshMenu(); toast(it.name + ' unlocked!');
@@ -1391,6 +1577,17 @@ function wire() {
   };
   $('btn-shop').onclick = () => { Sfx.click(); renderShop(); showScreen('shop'); };
   $('btn-how').onclick = () => { Sfx.click(); showScreen('howto'); };
+  $('btn-trophies').onclick = () => { Sfx.click(); renderTrophies(); showScreen('trophies'); };
+  $('btn-trophies-back').onclick = () => { Sfx.click(); goMenu(); };
+  $('btn-symbols').onclick = () => {
+    Sfx.click();
+    Save.data.symbols = !Save.data.symbols; Save.save();
+    refreshMenu();
+    toast('Symbol mode ' + (Save.data.symbols ? 'ON ●▲■' : 'OFF'));
+  };
+  $('btn-boost-shield').onclick = () => armBoost('shield');
+  $('btn-boost-magnet').onclick = () => armBoost('magnet');
+  $('btn-login-claim').onclick = () => { Sfx.click(); claimLogin(); refreshMenu(); showScreen('menu'); };
   $('btn-how-back').onclick = () => { Sfx.click(); goMenu(); };
   $('btn-levels-back').onclick = () => { Sfx.click(); goMenu(); };
   $('btn-shop-back').onclick = () => { Sfx.click(); goMenu(); };
@@ -1480,6 +1677,8 @@ wire();
 $('btn-mute').textContent = Save.data.muted ? '🔇' : '🔊';
 refreshMenu();
 showScreen('menu');
+// v7: daily login reward (once per day, on boot)
+if (checkLogin()) { renderLogin(); showScreen('login'); }
 hud(false);
 // attract-mode backdrop: a few demo rows behind the menu
 (function demoRows() {
