@@ -80,8 +80,8 @@ const Save = {
   defaults() {
     return {
       coins: 0, unlocked: 1,
-      best: { endless: 0, rush: 0, sudden: 0, levels: {} },
-      bestRows: { endless: 0, sudden: 0, daily: {} }, // ghost markers
+      best: { endless: 0, rush: 0, sudden: 0, dual: 0, levels: {} },
+      bestRows: { endless: 0, sudden: 0, dual: 0, daily: {} }, // ghost markers
       balls: { owned: ['orb'], sel: 'orb' },
       trails: { owned: ['none'], sel: 'none' },
       themes: { owned: ['midnight'], sel: 'midnight' },
@@ -89,14 +89,16 @@ const Save = {
       missions: null, // 3 active: [{id, progress}]
       daily: { last: '', streak: 0, best: {}, plays: 0 }, // best: {YYYY-MM-DD: score}
       // v7
-      login: { last: '', streak: 0, claimed: '' },
+      login: { last: '', streak: 0, claimed: '', freeze: 0, frozenDays: [] },
       xp: 0, coinsEarned: 0,
       trophies: [], // trophy ids
       boost: null, // pending rewarded run starter: 'shield' | 'magnet'
       symbols: false, // color-blind symbol mode
       shieldSaves: 0,
       // v8
-      stats: null // {runs, rows, perfects, repaints, playTime, fevers}
+      stats: null, // {runs, rows, perfects, repaints, playTime, fevers}
+      // v9
+      skipTokens: 0 // consumable 👻 skip tokens
     };
   },
   load() {
@@ -274,12 +276,39 @@ function checkLogin() {
   const l = Save.data.login, today = dayStr();
   if (l.last === today) return false; // already handled today
   const yest = dayStr(new Date(Date.now() - 864e5));
+  if (l.last !== yest && l.last !== '' && (l.freeze || 0) > 0) {
+    // v9: ❄️ streak freeze — a banked freeze bridges the missed day(s)
+    l.freeze--;
+    l.frozenDays = l.frozenDays || [];
+    l.frozenDays.push(yest);
+    if (l.frozenDays.length > 7) l.frozenDays.shift();
+    l.streak = l.streak + 1; // the streak survives; today counts onward
+    if (l.streak > 7) l.streak = 1;
+    l.last = today;
+    Save.save();
+    if (l.streak >= 7) awardTrophy('streak7');
+    setTimeout(() => toast('❄️ Streak frozen! Day ' + Math.min(l.streak, 7) + ' preserved.'), 800);
+    return true;
+  }
   l.streak = (l.last === yest) ? l.streak + 1 : 1;
   if (l.streak > 7) l.streak = 1; // cycle restarts after day 7 claimed
   l.last = today;
   Save.save();
   if (l.streak >= 7) awardTrophy('streak7');
   return true; // show claim overlay
+}
+const FREEZE_PRICE = 150, FREEZE_MAX = 2;
+function buyFreeze() {
+  const l = Save.data.login;
+  l.freeze = l.freeze || 0;
+  if (l.freeze >= FREEZE_MAX) { toast('❄️ Freeze bank full (2 max)!'); return; }
+  if (Save.data.coins < FREEZE_PRICE) { toast('Need ' + FREEZE_PRICE + '🪙 for a ❄️ freeze'); return; }
+  Save.data.coins -= FREEZE_PRICE;
+  l.freeze++;
+  Save.save();
+  Sfx.win();
+  renderLogin(); refreshMenu();
+  toast('❄️ Freeze banked! (' + l.freeze + '/' + FREEZE_MAX + ')');
 }
 function claimLogin() {
   const l = Save.data.login;
@@ -387,6 +416,11 @@ const Game = {
   ghostY: 0, ghostPassed: false,         // ghost marker (best depth)
   zone: -1,                              // depth zone index
   puSlow: 0,                             // bullet-time pickup timer
+  // v9
+  ball2: null,                           // 👯 dual drop: second ball {color} (shares y/vy)
+  pchain: 0,                             // 🔥 consecutive PERFECT passes
+  chests: [],                            // 🎁 milestone chest pickups
+  skipNext: false,                       // 👻 skip token armed: phase through next row
   W: 0, H: 0, R: 120, ballScreenY: 0,
   time: 0
 };
@@ -522,6 +556,8 @@ function endlessRow(depth, prevGapC) {
   // v8: drifting gaps in deep endless — never on a gate row
   row.drift = (!gated && depth >= 20 && srp(Math.min(0.35, 0.08 + depth * 0.004))) ? sr(0.25, 0.5) * (srp(0.5) ? 1 : -1) : 0;
   row.gapC0 = row.gapC; row.driftT0 = Game.runTime || 0;
+  // v9: 🦎 chameleon rows — gap cycles color on a timer (not in dual; always eventually passable)
+  row.cham = (!gated && depth >= 15 && Game.playMode !== 'dual' && srp(0.12));
   if (depth > 8 && srp(Math.min(0.5, 0.1 + depth * 0.006))) {
     const rh = sr(0.28, 0.5);
     const rc = norm(gapC + Math.PI + sr(-0.9, 0.9));
@@ -583,9 +619,15 @@ function startRun(playMode, level) {
   Game.runTime = 0;
   Game.zone = -1;
   Game.ghostPassed = false;
-  const br = Save.data.bestRows || { endless: 0, sudden: 0, daily: {} };
+  // v9: dual drop second ball, perfect-chain, chests, skip token
+  Game.ball2 = playMode === 'dual' ? { color: 1 } : null;
+  Game.pchain = 0;
+  Game.chests = [];
+  Game.skipNext = false;
+  const br = Save.data.bestRows || { endless: 0, sudden: 0, dual: 0, daily: {} };
   Game.ghostY = playMode === 'endless' ? (br.endless || 0) * PHYS.rowSpacing
     : playMode === 'sudden' ? (br.sudden || 0) * PHYS.rowSpacing
+    : playMode === 'dual' ? (br.dual || 0) * PHYS.rowSpacing
     : playMode === 'daily' ? ((br.daily || {})[dayStr()] || 0) * PHYS.rowSpacing : 0;
   stat('runs');
   Game.rowIndex = -1;
@@ -634,6 +676,7 @@ function finishDeath() {
   const prev = Game.playMode === 'endless' ? Save.data.best.endless
     : Game.playMode === 'rush' ? Save.data.best.rush
     : Game.playMode === 'sudden' ? Save.data.best.sudden
+    : Game.playMode === 'dual' ? Save.data.best.dual
     : Game.playMode === 'daily' ? (Save.data.daily.best[today] || 0)
     : (Save.data.best.levels[Game.level] || 0);
   Game.newBest = Game.score > prev;
@@ -641,14 +684,16 @@ function finishDeath() {
     if (Game.playMode === 'endless') Save.data.best.endless = Game.score;
     else if (Game.playMode === 'rush') Save.data.best.rush = Game.score;
     else if (Game.playMode === 'sudden') Save.data.best.sudden = Game.score;
+    else if (Game.playMode === 'dual') Save.data.best.dual = Game.score;
     else if (Game.playMode === 'daily') Save.data.daily.best[today] = Game.score;
     else Save.data.best.levels[Game.level] = Game.score;
   }
   // v8: best depth per mode feeds the ghost marker
   const rowsDone = Math.max(0, Game.rowIndex + 1);
-  const br = Save.data.bestRows || (Save.data.bestRows = { endless: 0, sudden: 0, daily: {} });
+  const br = Save.data.bestRows || (Save.data.bestRows = { endless: 0, sudden: 0, dual: 0, daily: {} });
   if (Game.playMode === 'endless' && rowsDone > (br.endless || 0)) br.endless = rowsDone;
   else if (Game.playMode === 'sudden' && rowsDone > (br.sudden || 0)) br.sudden = rowsDone;
+  else if (Game.playMode === 'dual' && rowsDone > (br.dual || 0)) br.dual = rowsDone;
   else if (Game.playMode === 'daily') { br.daily = br.daily || {}; if (rowsDone > (br.daily[today] || 0)) br.daily[today] = rowsDone; }
   Save.data.coins += Game.coinsRun;
   Save.save();
@@ -752,7 +797,7 @@ function update(dt) {
     if (G.slowT <= 0.05) { G.timeScale = 0.45; G.slowT = 0.12; }
   }
   // v8: depth zones + ghost marker (endless-like modes)
-  if (G.playMode === 'endless' || G.playMode === 'daily' || G.playMode === 'sudden') {
+  if (G.playMode === 'endless' || G.playMode === 'daily' || G.playMode === 'sudden' || G.playMode === 'dual') {
     const z = Math.floor(b.y / (25 * PHYS.rowSpacing));
     if (z !== G.zone) {
       G.zone = z;
@@ -782,6 +827,7 @@ function update(dt) {
     G.gates = G.gates.filter(gt => !gt.taken && gt.y > b.y - G.H);
     G.coins = G.coins.filter(c => !c.taken && c.y > b.y - G.H);
     G.powerups = G.powerups.filter(p => !p.taken && p.y > b.y - G.H);
+    G.chests = G.chests.filter(ch => !ch.taken && ch.y > b.y - G.H); // v9
   }
 
   // platform crossings (falling only)
@@ -799,8 +845,11 @@ function update(dt) {
       if (!gt.taken && prevY < gt.y && b.y >= gt.y) {
         if (angDist(0, norm(gt.localA + G.rot)) < PHYS.gateHalf) {
           gt.taken = true;
-          if (b.color !== gt.color) {
+          // v9: 👯 dual drop repaints BOTH balls
+          const needRepaint = b.color !== gt.color || (G.ball2 && G.ball2.color !== gt.color);
+          if (needRepaint) {
             b.color = gt.color;
+            if (G.ball2) G.ball2.color = gt.color;
             Sfx.repaint();
             burst(G.W / 2, G.ballScreenY, PALETTE[b.color].main, 22);
             popup('REPAINTED!', PALETTE[b.color].main);
@@ -819,8 +868,10 @@ function update(dt) {
       if (!c.taken && prevY < c.y && b.y >= c.y) {
         if (angDist(0, norm(c.localA + G.rot)) < coinReach) {
           c.taken = true;
-          G.coinsRun++;
+          const cm = pchainMult(); // v9: 🔥 perfect-chain multiplies coin drops
+          G.coinsRun += cm;
           G.score += 25;
+          if (cm > 1) popup('🔥 +' + cm + '🪙', '#ff9d00');
           addFever(2);
           Sfx.coin();
           burst(G.W / 2, G.ballScreenY, '#ffd700', 12);
@@ -835,6 +886,15 @@ function update(dt) {
         if (angDist(0, norm(p.localA + G.rot)) < 0.55) {
           p.taken = true;
           applyPowerup(p.kind);
+        }
+      }
+    }
+    // v9: 🎁 milestone chests
+    for (const ch of G.chests) {
+      if (!ch.taken && prevY < ch.y && b.y >= ch.y) {
+        if (angDist(0, norm(ch.localA + G.rot)) < 0.6) {
+          ch.taken = true;
+          applyChest();
         }
       }
     }
@@ -934,8 +994,73 @@ function checkRival() {
   }
 }
 
+/* ---------------- v9: chameleon / perfect-chain / chests / dual / skip ---------------- */
+// 🦎 chameleon color: 2.4s global cycle, 0.8s per color — slow enough to react,
+// synced across rows so there is one rhythm to learn. Always eventually matches.
+function chameleonColor() {
+  return Math.floor(Game.runTime / 0.8) % 3;
+}
+// 🔥 perfect-chain coin multiplier: x2 at 3, x3 at 5, x5 at 8 (cap). Coins only, never score.
+function pchainMult() {
+  const c = Game.pchain || 0;
+  return c >= 8 ? 5 : c >= 5 ? 3 : c >= 3 ? 2 : 1;
+}
+function spawnChest() {
+  const G = Game;
+  // a few rows ahead of the ball, at the front (easy to see and grab)
+  G.chests.push({ y: G.ball.y + PHYS.rowSpacing * 4, localA: 0, taken: false });
+  popup('🎁 MILESTONE CHEST AHEAD!', '#ffd700');
+  Sfx.power();
+}
+function applyChest() {
+  const G = Game;
+  const burstCoins = 20;
+  G.coinsRun += burstCoins;
+  popup('🎁 +' + burstCoins + '🪙!', '#ffd700');
+  Sfx.win();
+  buzz([40, 40, 80]);
+  for (let i = 0; i < 50; i++) burst(rand(0, G.W), rand(0, G.H * 0.5), '#ffd700', 24);
+  // 10%: free random unowned shop skin
+  if (Math.random() < 0.10) {
+    const pool = [];
+    for (const it of BALLS) if (!Save.data.balls.owned.includes(it.id)) pool.push(['balls', it]);
+    for (const it of TRAILS) if (!Save.data.trails.owned.includes(it.id) && !it.exclusive) pool.push(['trails', it]);
+    for (const it of THEMES) if (!Save.data.themes.owned.includes(it.id)) pool.push(['themes', it]);
+    if (pool.length > 0) {
+      const [key, it] = pool[Math.floor(Math.random() * pool.length)];
+      Save.data[key].owned.push(it.id);
+      Save.save();
+      setTimeout(() => { toast('🎁 FREE SKIN: ' + it.name + '!'); Sfx.fever(); }, 900);
+    } else {
+      G.coinsRun += 50;
+      setTimeout(() => toast('🎁 Jackpot +50🪙!'), 900);
+    }
+  }
+  updateHUD();
+}
 function onCrossRow(row, i) {
   const G = Game, b = G.ball;
+  // v9: 👻 skip token — phase through the next row untouched
+  if (G.skipNext) {
+    G.skipNext = false;
+    G.streak = 0; G.pchain = 0;
+    popup('👻 PHASED!', '#9df');
+    burst(G.W / 2, row.y - G.camY, '#9df', 16);
+    Sfx.tone(900, 0.2, 'sine', 0.15, 300);
+    updateHUD();
+    return;
+  }
+  // v9: 🦎 chameleon gap — passable only when the cycling color matches the ball.
+  // Mistimed drops bounce off safely (no death); the cycle always comes around.
+  if (row.cham && chameleonColor() !== b.color) {
+    b.y = row.y; b.vy = -PHYS.bounceV;
+    if (G.streak > 0) G.streak = 0;
+    G.pchain = 0;
+    popup('🦎 NOT YET!', '#7dff9d');
+    Sfx.tone(220, 0.12, 'square', 0.12, 140);
+    updateHUD();
+    return;
+  }
   const rel = angDist(0, norm(row.gapC + G.rot));
   // The golden finish ring (no game color) is the goal line: the ball always
   // drops through it — you can never get stuck bouncing on the finish.
@@ -952,7 +1077,14 @@ function onCrossRow(row, i) {
       Game.tPerfect++;
       if (Game.tPerfect >= 10) awardTrophy('perfect10');
       stat('perfects');
-    } else if (rel > row.gapH * 0.8) {
+      // v9: 🔥 perfect-chain builds on consecutive PERFECTs
+      G.pchain = (G.pchain || 0) + 1;
+      const pm = pchainMult();
+      if (pm > 1) popup('🔥 CHAIN x' + pm + ' COINS!', '#ff9d00');
+    } else {
+      // v9: any non-PERFECT pass resets the perfect-chain
+      G.pchain = 0;
+      if (rel > row.gapH * 0.8) {
       pts += 15; popup('CLOSE! +' + pts, '#ff9d00');
       addFever(15);
       // near-miss slow-mo: savor the thread
@@ -962,6 +1094,7 @@ function onCrossRow(row, i) {
       addFever(8);
       if (G.streak >= 3) popup('x' + G.streak + ' COMBO', '#ff2fd6');
     }
+    }
     pts = Math.round(pts * scoreMult());
     if (row.golden) { // golden gap jackpot: 3x
       pts *= 3;
@@ -970,6 +1103,7 @@ function onCrossRow(row, i) {
       burst(G.W / 2, row.y - G.camY, '#ffd700', 24);
     }
     if (G.playMode === 'sudden') pts *= 3; // sudden death: triple stakes
+    if (G.playMode === 'dual') pts *= 2; // v9: dual drop — two balls, double score
     G.score += pts;
     G.rowIndex = Math.max(G.rowIndex, i);
     stat('rows');
@@ -980,6 +1114,8 @@ function onCrossRow(row, i) {
     missionEv('row', G.rowIndex + 1);
     missionEv('combo', G.streak);
     if (G.rowIndex + 1 >= 50) awardTrophy('rows50');
+    // v9: 🎁 milestone chest every 25 rows
+    if ((G.rowIndex + 1) % 25 === 0) spawnChest();
     checkRival();
     updateHUD();
     if (G.playMode === 'levels' && i === G.rows.length - 1) levelComplete();
@@ -989,9 +1125,13 @@ function onCrossRow(row, i) {
     for (const s of row.reds) {
       if (inArc(localA, s.a0, s.a1)) { endRunDeath('spikes'); return; }
     }
+    // v9: 👯 dual drop — BOTH balls must match, or both shatter
+    const b2ok = G.playMode !== 'dual' || row.color === -1 || row.color === G.ball2.color;
     if (row.color === -1 || row.color === b.color) {
+      if (!b2ok) { endRunDeath('color'); return; }
       b.y = row.y; b.vy = -PHYS.bounceV;
       if (G.streak > 0) G.streak = 0;
+      G.pchain = 0; // v9: landing resets perfect-chain
       addFever(-8); // bouncing without passing cools the meter
       Sfx.bounce(0);
       updateHUD();
@@ -1173,6 +1313,15 @@ function drawRow(row) {
     ctx.fillStyle = base; ctx.shadowBlur = 12; ctx.shadowColor = base;
     ctx.beginPath(); ctx.arc(gx, gy, 5, 0, TAU); ctx.fill(); ctx.shadowBlur = 0;
   }
+  // v9: 🦎 chameleon — gap edges pulse with the cycling color (the timing signal)
+  if (row.cham) {
+    const cc = PALETTE[chameleonColor()].main;
+    const pulse = 0.55 + 0.35 * Math.sin(Game.time * 8);
+    ctx.globalAlpha = pulse;
+    strokeArc(gapW - gapH - 0.14, gapW - gapH + 0.14, sy, cc, RING * 0.85, 18);
+    strokeArc(gapW + gapH - 0.14, gapW + gapH + 0.14, sy, cc, RING * 0.85, 18);
+    ctx.globalAlpha = 1;
+  }
   // symbol mode: paint the color's shape on the ring (rotates with the tower)
   if (Save.data.symbols && row.color >= 0) {
     ctx.fillStyle = 'rgba(0,0,0,.6)';
@@ -1243,6 +1392,26 @@ function drawCoin(c) {
   ctx.restore();
 }
 
+function drawChest(ch) {
+  if (ch.taken) return;
+  const sy = ch.y - Game.camY;
+  if (sy < -40 || sy > Game.H + 40) return;
+  const th = ch.localA + Game.rot;
+  const [x, y] = ringPt(th, sy);
+  const bob = Math.sin(Game.time * 3 + ch.y) * 6;
+  ctx.save();
+  ctx.translate(x, y + bob);
+  ctx.shadowBlur = 22; ctx.shadowColor = '#ffd700';
+  ctx.fillStyle = 'rgba(20,12,2,.92)';
+  ctx.beginPath(); ctx.arc(0, 0, 19, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(0, 0, 19, 0, TAU); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.font = '20px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('🎁', 0, 1);
+  ctx.restore();
+}
+
 function drawPowerup(p) {
   if (p.taken) return;
   const sy = p.y - Game.camY;
@@ -1266,8 +1435,17 @@ function drawPowerup(p) {
 
 function drawBall() {
   if (Game.mode === 'dying' || Game.mode === 'gameover') return;
-  const x = Game.W / 2, y = Game.ballScreenY;
-  const b = Game.ball, col = PALETTE[b.color];
+  // v9: 👯 dual drop — draw both balls (mirrored offsets, shared y)
+  if (Game.ball2) {
+    drawOneBall(-20, Game.ball.color);
+    drawOneBall(20, Game.ball2.color);
+    return;
+  }
+  drawOneBall(0, Game.ball.color);
+}
+function drawOneBall(xOff, colorIdx) {
+  const x = Game.W / 2 + xOff, y = Game.ballScreenY;
+  const b = Game.ball, col = PALETTE[colorIdx];
   const squash = clamp(1 - Math.abs(b.vy) / 6000, 0.78, 1);
   const skin = Save.data.balls.sel;
   ctx.save();
@@ -1359,8 +1537,9 @@ function render() {
   for (const gt of G.gates) drawGate(gt);
   for (const c of G.coins) drawCoin(c);
   for (const p of G.powerups) drawPowerup(p);
+  for (const ch of G.chests) drawChest(ch); // v9 🎁
   // v8: ghost marker — your best depth, chase it
-  if ((G.playMode === 'endless' || G.playMode === 'daily' || G.playMode === 'sudden') && G.ghostY > 0) {
+  if ((G.playMode === 'endless' || G.playMode === 'daily' || G.playMode === 'sudden' || G.playMode === 'dual') && G.ghostY > 0) {
     const gy = G.ghostY - G.camY;
     if (gy > -20 && gy < G.H + 20) {
       ctx.save();
@@ -1465,22 +1644,58 @@ function updateHUD() {
   $('hud-level').textContent = Game.playMode === 'endless' ? 'ENDLESS · ' + rows
     : Game.playMode === 'rush' ? 'RUSH · ' + fmtTime(Game.timeLeft)
     : Game.playMode === 'sudden' ? '💀 SUDDEN · ' + rows
+    : Game.playMode === 'dual' ? '👯 DUAL · ' + rows
     : Game.playMode === 'daily' ? '📅 DAILY · ' + rows + ' · 🔥' + Save.data.daily.streak
     : 'LEVEL ' + Game.level;
   $('coin-count').textContent = Save.data.coins;
   // "you are this color" chip — the core of the color mechanic, always visible
+  // v9: 👯 dual drop shows BOTH ball colors
   const c = PALETTE[Game.ball.color];
-  $('hud-cname').textContent = (Save.data.symbols ? SYMBOLS[Game.ball.color] + ' ' : '') + c.name.toUpperCase();
-  $('hud-dot').style.background = c.main;
-  $('hud-dot').style.boxShadow = '0 0 8px ' + c.main;
+  if (Game.ball2) {
+    const c2 = PALETTE[Game.ball2.color];
+    $('hud-cname').textContent = c.name.toUpperCase() + ' + ' + c2.name.toUpperCase();
+    $('hud-dot').style.background = 'linear-gradient(90deg,' + c.main + ',' + c2.main + ')';
+    $('hud-dot').style.boxShadow = '0 0 8px ' + c.main;
+  } else {
+    $('hud-cname').textContent = (Save.data.symbols ? SYMBOLS[Game.ball.color] + ' ' : '') + c.name.toUpperCase();
+    $('hud-dot').style.background = c.main;
+    $('hud-dot').style.boxShadow = '0 0 8px ' + c.main;
+  }
   $('hud-color').style.borderColor = c.main;
   const cb = $('combo-badge');
   if (Game.streak >= 3) { cb.textContent = 'x' + Game.streak + ' COMBO'; cb.classList.remove('hidden'); }
   else cb.classList.add('hidden');
+  // v9: 🔥 perfect-chain badge
+  const chb = $('chain-badge');
+  if (chb) {
+    if ((Game.pchain || 0) >= 2) {
+      const pm = pchainMult();
+      chb.textContent = '🔥 ' + Game.pchain + ' CHAIN' + (pm > 1 ? ' · x' + pm + '🪙' : '');
+      chb.classList.remove('hidden');
+    } else chb.classList.add('hidden');
+  }
+  // v9: 👻 skip token button
+  const sk = $('btn-skip');
+  if (sk) {
+    const n = Save.data.skipTokens || 0;
+    sk.innerHTML = '👻' + (n > 0 ? '<span class="sk-n">' + n + '</span>' : '');
+    sk.classList.toggle('active', !!Game.skipNext);
+    sk.style.display = Game.mode === 'playing' ? '' : 'none';
+  }
+}
+function useSkipToken() {
+  if (Game.mode !== 'playing' || Game.skipNext) return;
+  if ((Save.data.skipTokens || 0) <= 0) { toast('No 👻 skip tokens — grab one in the SHOP!'); return; }
+  Save.data.skipTokens--;
+  Save.save();
+  Game.skipNext = true;
+  Sfx.power();
+  toast('👻 Skip armed — phasing through the next row!');
+  updateHUD();
 }
 
 function refreshMenu() {
-  const best = Math.max(Save.data.best.endless, Save.data.best.rush || 0, Save.data.best.sudden || 0, ...Object.values(Save.data.best.levels), ...Object.values(Save.data.daily.best), 0);
+  const best = Math.max(Save.data.best.endless, Save.data.best.rush || 0, Save.data.best.sudden || 0, Save.data.best.dual || 0, ...Object.values(Save.data.best.levels), ...Object.values(Save.data.daily.best), 0);
   $('menu-best').textContent = best;
   $('menu-coins').textContent = Save.data.coins;
   // daily button sub: streak + today's best
@@ -1545,12 +1760,21 @@ function renderStats() {
 
 function renderLogin() {
   const l = Save.data.login;
+  l.freeze = l.freeze || 0;
   $('login-day').textContent = Math.min(l.streak, 7);
   $('login-grid').innerHTML = LOGIN_REWARDS.map((r, i) => {
     const day = i + 1;
     const cls = day < l.streak ? 'done' : day === l.streak ? 'today' : '';
     return `<div class="login-cell ${cls}"><div class="d">DAY ${day}</div><div class="r">${day === 7 ? r + '🪙<br>🔥' : r + '🪙'}</div></div>`;
   }).join('');
+  // v9: ❄️ streak freeze
+  const fr = $('login-freeze-row');
+  if (fr) {
+    fr.innerHTML = `<div class="freeze-info">❄️ Freezes banked: <b>${l.freeze}/${FREEZE_MAX}</b> <span class="freeze-sub">protects your streak if you miss a day</span></div>` +
+      `<button id="btn-freeze-buy" class="small-btn" ${l.freeze >= FREEZE_MAX ? 'disabled' : ''}>❄️ BANK FREEZE · ${FREEZE_PRICE}🪙</button>`;
+    const bb = $('btn-freeze-buy');
+    if (bb) bb.onclick = () => { Sfx.click(); buyFreeze(); };
+  }
 }
 
 function armBoost(kind) {
@@ -1585,7 +1809,8 @@ function showGameOver() {
     : (Save.data.best.levels[Game.level] || 0);
   $('go-best').textContent = best;
   $('go-mode').textContent = Game.playMode === 'daily' ? '📅 DAILY · 🔥' + Save.data.daily.streak + ' DAY STREAK'
-    : Game.playMode === 'sudden' ? '💀 SUDDEN DEATH · 3× SCORE' : '';
+    : Game.playMode === 'sudden' ? '💀 SUDDEN DEATH · 3× SCORE'
+    : Game.playMode === 'dual' ? '👯 DUAL DROP · 2× SCORE' : '';
   $('go-coins').textContent = '+' + Game.coinsRun;
   $('go-newbest').classList.toggle('hidden', !Game.newBest);
   // sudden death: no revive, ever
@@ -1656,8 +1881,12 @@ function renderLevels() {
 
 /* ---------------- Shop ---------------- */
 let shopTab = 'balls';
+const SKIP_PRICE = 200;
+const ITEMS = [
+  { id: 'skip', name: 'Skip Token', emoji: '👻', price: SKIP_PRICE, desc: 'Phase through the next row untouched' }
+];
 function catalogFor(tab) {
-  return tab === 'balls' ? { items: BALLS, key: 'balls' } : tab === 'trails' ? { items: TRAILS, key: 'trails' } : { items: THEMES, key: 'themes' };
+  return tab === 'balls' ? { items: BALLS, key: 'balls' } : tab === 'trails' ? { items: TRAILS, key: 'trails' } : tab === 'items' ? { items: ITEMS, key: 'items' } : { items: THEMES, key: 'themes' };
 }
 function renderShop() {
   $('shop-coins').textContent = Save.data.coins;
@@ -1665,6 +1894,30 @@ function renderShop() {
   const { items, key } = catalogFor(shopTab);
   const grid = $('shop-grid');
   grid.innerHTML = '';
+  // v9: 👻 consumables tab — skip tokens (stackable, not equip)
+  if (key === 'items') {
+    const n = Save.data.skipTokens || 0;
+    for (const it of items) {
+      const d = document.createElement('div');
+      d.className = 'shop-item owned';
+      d.innerHTML = `<div class="preview"><div style="font-size:26px">${it.emoji}</div></div>` +
+        `<div class="name">${it.name}</div><div class="price">OWNED: ${n}</div>` +
+        `<div class="item-desc">${it.desc}</div>` +
+        `<button class="small-btn buy-btn">BUY · 🪙${it.price}</button>`;
+      d.querySelector('.buy-btn').onclick = (e) => {
+        e.stopPropagation(); Sfx.click();
+        if (Save.data.coins < it.price) { toast('Not enough coins!'); return; }
+        Save.data.coins -= it.price;
+        Save.data.skipTokens = (Save.data.skipTokens || 0) + 1;
+        Save.save();
+        Sfx.win();
+        renderShop(); refreshMenu();
+        toast('👻 Skip token bought! (' + Save.data.skipTokens + ' owned)');
+      };
+      grid.appendChild(d);
+    }
+    return;
+  }
   const st = Save.data[key];
   for (const it of items) {
     const owned = st.owned.includes(it.id);
@@ -1708,7 +1961,9 @@ function wire() {
   $('btn-endless').onclick = () => { Sfx.init(); Sfx.click(); startRun('endless'); };
   $('btn-rush').onclick = () => { Sfx.init(); Sfx.click(); startRun('rush'); };
   $('btn-sudden').onclick = () => { Sfx.init(); Sfx.click(); startRun('sudden'); };
+  $('btn-dual').onclick = () => { Sfx.init(); Sfx.click(); startRun('dual'); };
   $('btn-daily').onclick = () => { Sfx.init(); Sfx.click(); startRun('daily'); };
+  $('btn-skip').onclick = () => { Sfx.click(); useSkipToken(); };
   $('btn-stats').onclick = () => { Sfx.click(); renderStats(); showScreen('stats'); };
   $('btn-stats-back').onclick = () => { Sfx.click(); goMenu(); };
   $('rival-dismiss').onclick = (e) => { e.stopPropagation(); Sfx.click(); Game.rival._dismissed = true; refreshMenu(); };

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0a0a1a">
 <title>NEON HELIX</title>
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 <div id="game-wrap">
@@ -22,10 +22,12 @@
     <div id="pu-icons"></div>
     <div id="hud-right">
       <div id="hud-coins">🪙 <span id="coin-count">0</span></div>
+      <button id="btn-skip" class="icon-btn" aria-label="Use skip token" style="display:none">👻</button>
       <button id="btn-pause" class="icon-btn" aria-label="Pause">⏸</button>
       <button id="btn-mute" class="icon-btn" aria-label="Mute">🔊</button>
     </div>
     <div id="combo-badge" class="hidden">x2</div>
+    <div id="chain-badge" class="hidden">🔥</div>
   </div>
 
   <!-- Main menu -->
@@ -43,6 +45,7 @@
       <button id="btn-endless" class="big-btn alt">∞ ENDLESS</button>
       <button id="btn-rush" class="big-btn rush">⚡ RUSH <span class="sub">60-second score attack</span></button>
       <button id="btn-sudden" class="big-btn sudden">💀 SUDDEN DEATH <span class="sub">one life · no revive · 3× score</span></button>
+      <button id="btn-dual" class="big-btn dual">👯 DUAL DROP <span class="sub">two balls · 2× score · one mistake kills both</span></button>
       <button id="btn-daily" class="big-btn daily">📅 DAILY <span class="sub" id="daily-sub">same tower for everyone</span></button>
       <div id="missions"></div>
       <div class="menu-row">
@@ -82,6 +85,7 @@
         <button class="shop-tab active" data-tab="balls">BALLS</button>
         <button class="shop-tab" data-tab="trails">TRAILS</button>
         <button class="shop-tab" data-tab="themes">THEMES</button>
+        <button class="shop-tab" data-tab="items">ITEMS</button>
       </div>
       <div id="shop-grid"></div>
       <button id="btn-shop-back" class="small-btn">← BACK</button>
@@ -109,6 +113,12 @@
         <li>📅 <b>DAILY</b>: one shared tower per day. Keep your 🔥 streak alive.</li>
         <li>🎯 Complete <b>missions</b> for bonus coins.</li>
         <li>📺 Watch an ad to <b>revive</b> once per run, or double your coins.</li>
+        <li>🦎 <b>Chameleon gaps</b> cycle colors — drop through only when it matches your ball. Mistimed? You bounce, no death.</li>
+        <li>🔥 <b>Perfect chains:</b> consecutive PERFECTs multiply coin drops (x2 at 3, x3 at 5, x5 at 8).</li>
+        <li>🎁 <b>Milestone chests</b> every 25 rows — coin burst, 10% chance at a free skin.</li>
+        <li>👯 <b>DUAL DROP:</b> two balls, 2× score — but one wrong color kills both.</li>
+        <li>👻 <b>Skip tokens</b> (shop) phase you through the next row untouched.</li>
+        <li>❄️ <b>Streak freezes</b> (daily reward screen) protect your login streak if you miss a day.</li>
       </ul>
       <button id="btn-how-back" class="small-btn">← BACK</button>
     </div>
@@ -194,12 +204,13 @@
       <h2>🎁 DAILY REWARD</h2>
       <p class="login-streak">Day <span id="login-day">1</span> — come back tomorrow for more!</p>
       <div id="login-grid"></div>
+      <div id="login-freeze-row"></div>
       <button id="btn-login-claim" class="big-btn reward">CLAIM</button>
     </div>
   </div>
 
   <div id="toast" class="hidden"></div>
 </div>
-<script src="game.js?v=8"></script>
+<script src="game.js?v=9"></script>
 </body>
 </html>
