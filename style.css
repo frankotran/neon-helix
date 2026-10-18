@@ -166,6 +166,9 @@ h2 { font-size: 22px; letter-spacing: 2px; margin-bottom: 16px; color: #0ff; tex
 .stat-row span { font-size: 13.5px; font-weight: 600; opacity: .8; }
 .stat-row b { font-size: 16px; color: #00f0ff; text-shadow: 0 0 8px rgba(0,240,255,.5); }
 
+/* ---------- v10: ascend ---------- */
+.big-btn.ascend { background: linear-gradient(90deg, #ff6a00, #ffb300); box-shadow: 0 0 18px rgba(255,140,0,.5); color: #fff; }
+
 /* ---------- v9: dual / chain / skip / freeze / items ---------- */
 .big-btn.dual { background: linear-gradient(90deg, #00c9a7, #7b2ff7); box-shadow: 0 0 18px rgba(0,220,180,.5); color: #fff; }
 #chain-badge { position: absolute; top: 116px; left: 50%; transform: translateX(-50%);

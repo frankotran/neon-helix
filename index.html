@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0a0a1a">
 <title>NEON HELIX</title>
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 <div id="game-wrap">
@@ -38,6 +38,7 @@
       <div class="menu-best">
         <div>🏆 Best <span id="menu-best">0</span></div>
         <div>🪙 <span id="menu-coins">0</span></div>
+        <div>💎 <span id="menu-shards">0</span></div>
       </div>
       <div id="rank-row"><span id="rank-badge">ROOKIE</span><div class="rank-bar"><div id="rank-fill"></div></div></div>
       <div id="rival-banner" class="hidden"><span id="rival-text"></span><button id="rival-dismiss">✕</button></div>
@@ -47,6 +48,8 @@
       <button id="btn-sudden" class="big-btn sudden">💀 SUDDEN DEATH <span class="sub">one life · no revive · 3× score</span></button>
       <button id="btn-dual" class="big-btn dual">👯 DUAL DROP <span class="sub">two balls · 2× score · one mistake kills both</span></button>
       <button id="btn-daily" class="big-btn daily">📅 DAILY <span class="sub" id="daily-sub">same tower for everyone</span></button>
+      <button id="btn-ascend" class="big-btn ascend">🧭 ASCENSION <span class="sub">climb · outrun the lava</span></button>
+      <button id="btn-mystery" class="big-btn reward">📦 MYSTERY GIFT <span class="sub" id="mystery-sub">free daily spin!</span></button>
       <div id="missions"></div>
       <div class="menu-row">
         <button id="btn-shop" class="small-btn">🛍 SHOP</button>
@@ -58,6 +61,7 @@
       </div>
       <div class="menu-row">
         <button id="btn-stats" class="small-btn">📊 CAREER STATS</button>
+        <button id="btn-ghost" class="small-btn">👻 GHOST <span id="ghost-state">ON</span></button>
       </div>
       <div class="menu-row">
         <button id="btn-boost-shield" class="small-btn">🛡 BOOST 📺</button>
@@ -80,12 +84,13 @@
   <div id="shop" class="overlay hidden">
     <div class="panel wide">
       <h2>SHOP</h2>
-      <div class="shop-coins">🪙 <span id="shop-coins">0</span></div>
+      <div class="shop-coins">🪙 <span id="shop-coins">0</span> &nbsp; 💎 <span id="shop-shards">0</span></div>
       <div class="shop-tabs">
         <button class="shop-tab active" data-tab="balls">BALLS</button>
         <button class="shop-tab" data-tab="trails">TRAILS</button>
         <button class="shop-tab" data-tab="themes">THEMES</button>
         <button class="shop-tab" data-tab="items">ITEMS</button>
+        <button class="shop-tab" data-tab="premium">💎 PREMIUM</button>
       </div>
       <div id="shop-grid"></div>
       <button id="btn-shop-back" class="small-btn">← BACK</button>
@@ -119,6 +124,12 @@
         <li>👯 <b>DUAL DROP:</b> two balls, 2× score — but one wrong color kills both.</li>
         <li>👻 <b>Skip tokens</b> (shop) phase you through the next row untouched.</li>
         <li>❄️ <b>Streak freezes</b> (daily reward screen) protect your login streak if you miss a day.</li>
+        <li>🛝 <b>Rail-slides</b> are slanted boost pads — land on one to slingshot downward at 1.5× speed for 3 rows.</li>
+        <li>🌀 <b>Gravity wells</b> tug the tower sideways near the gap — counter-drift to stay on line.</li>
+        <li>💎 <b>Shards:</b> finish a run with 60%+ PERFECT rate to earn shards, spent on <b>premium</b> shop skins.</li>
+        <li>🧭 <b>ASCENSION:</b> climb upward, outrun the rising lava. Score = height.</li>
+        <li>👻 <b>Ghost:</b> race a translucent replay of your best run. Toggle in menu.</li>
+        <li>📦 <b>Mystery gift:</b> free daily spin from the menu — coins, shards, sometimes a rare skin.</li>
       </ul>
       <button id="btn-how-back" class="small-btn">← BACK</button>
     </div>
@@ -211,6 +222,6 @@
 
   <div id="toast" class="hidden"></div>
 </div>
-<script src="game.js?v=9"></script>
+<script src="game.js?v=10"></script>
 </body>
 </html>
