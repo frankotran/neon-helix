@@ -80,7 +80,8 @@ const Save = {
   defaults() {
     return {
       coins: 0, unlocked: 1,
-      best: { endless: 0, rush: 0, levels: {} },
+      best: { endless: 0, rush: 0, sudden: 0, levels: {} },
+      bestRows: { endless: 0, sudden: 0, daily: {} }, // ghost markers
       balls: { owned: ['orb'], sel: 'orb' },
       trails: { owned: ['none'], sel: 'none' },
       themes: { owned: ['midnight'], sel: 'midnight' },
@@ -93,7 +94,9 @@ const Save = {
       trophies: [], // trophy ids
       boost: null, // pending rewarded run starter: 'shield' | 'magnet'
       symbols: false, // color-blind symbol mode
-      shieldSaves: 0
+      shieldSaves: 0,
+      // v8
+      stats: null // {runs, rows, perfects, repaints, playTime, fevers}
     };
   },
   load() {
@@ -183,6 +186,25 @@ function missionEv(ev, val, mode) {
       }, 2500);
     }
   }
+}
+
+/* ---------------- v8: zones / stats ---------------- */
+const ZONES = [
+  { name: 'NEON DEPTHS', tint: '#0a0a2e' },
+  { name: 'ABYSS', tint: '#06303a' },
+  { name: 'EMBER FIELDS', tint: '#3d1030' },
+  { name: 'VOID', tint: '#1c0a24' }
+];
+function ensureStats() {
+  if (!Save.data.stats) {
+    Save.data.stats = { runs: 0, rows: 0, perfects: 0, repaints: 0, playTime: 0, fevers: 0 };
+    Save.save();
+  }
+  return Save.data.stats;
+}
+function stat(k, n) {
+  const s = ensureStats();
+  s[k] = (s[k] || 0) + (n === undefined ? 1 : n);
 }
 
 /* ---------------- Haptics ---------------- */
@@ -360,6 +382,11 @@ const Game = {
   puShield: false, puMagnet: 0, puStar: 0, // active powerup effects
   mRun: null,                            // per-run mission progress {missionId: n}
   rival: null,                           // {score, mode, beaten} from ?rival= link
+  // v8
+  runTime: 0,                            // deterministic per-run clock (drives gap drift)
+  ghostY: 0, ghostPassed: false,         // ghost marker (best depth)
+  zone: -1,                              // depth zone index
+  puSlow: 0,                             // bullet-time pickup timer
   W: 0, H: 0, R: 120, ballScreenY: 0,
   time: 0
 };
@@ -377,13 +404,13 @@ const PHYS = {
    Fairness contract: consecutive gap centers differ by <= 1.5 rad (reachable
    during one bounce's airtime); red sectors never overlap a gap; a repaint
    gate always sits in the gap line before a color change. */
-const PU_KINDS = ['shield', 'magnet', 'star'];
+const PU_KINDS = ['shield', 'magnet', 'star', 'slow'];
 function genLevel(n) {
   const rows = [], gates = [], coins = [], powerups = [];
   let gapC = sr(0, TAU);
   // occasional powerup floating in the gap between rows (never on the finish row)
   const maybePowerup = (y, gapCRef) => {
-    if (srp(0.08)) powerups.push({ y, localA: norm(gapCRef + sr(-0.4, 0.4)), kind: PU_KINDS[sri(0, 2)], taken: false });
+    if (srp(0.08)) powerups.push({ y, localA: norm(gapCRef + sr(-0.4, 0.4)), kind: PU_KINDS[sri(0, 3)], taken: false });
   };
 
   // Level 1 is a tutorial: every row is colored (no confusing neutrals) —
@@ -404,6 +431,8 @@ function genLevel(n) {
         if (k === 0) firstGap = gapC;
         rows.push({ y: i * PHYS.rowSpacing, gapC, gapH, color: s.color, reds: [] });
         rows[rows.length - 1].golden = srp(0.06); // golden gap: 3x points
+        rows[rows.length - 1].drift = 0; // tutorial: no drift
+        rows[rows.length - 1].gapC0 = gapC; rows[rows.length - 1].driftT0 = 0;
         if (srp(0.4)) coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.5, 0.5)), taken: false });
         maybePowerup(i * PHYS.rowSpacing - PHYS.rowSpacing / 2, gapC);
       }
@@ -425,6 +454,7 @@ function genLevel(n) {
 
   for (let i = 0; i < count; i++) {
     const isLast = i === count - 1;
+    let gated = false; // a repaint gate sits right above this row
     gapC = norm(gapC + sr(-1.2, 1.2));
     // color runs with repaint gates between them
     if (n > 1 && !isLast) {
@@ -435,6 +465,7 @@ function genLevel(n) {
           const nc = next === color ? (color + 1) % colors.length : next;
           gates.push({ y: i * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: gapC, color: nc, taken: false });
           color = nc;
+          gated = true;
         }
         runLeft = sri(3, 6);
       }
@@ -452,6 +483,9 @@ function genLevel(n) {
     }
     rows.push(row);
     row.golden = !isLast && srp(0.06); // golden gap: 3x points
+    // v8: drifting gaps from level 4 — never on a gate row (the gate was aimed at the still gap)
+    row.drift = (!isLast && !gated && n >= 4 && srp(0.25)) ? sr(0.25, 0.5) * (srp(0.5) ? 1 : -1) : 0;
+    row.gapC0 = row.gapC; row.driftT0 = 0;
     if (!isLast && srp(0.4)) {
       coins.push({ y: i * PHYS.rowSpacing + PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.5, 0.5)), taken: false });
     }
@@ -467,6 +501,7 @@ function endlessRow(depth, prevGapC) {
   // fairness contract as levels. (Random per-row colors would be unavoidable
   // deaths, since there'd be no way to repaint in time.)
   let color;
+  let gated = false;
   if (depth < 12) { color = 0; } // opening stretch matches the cyan ball — no grey confusion
   else {
     if (depth === 12) { Game.eColor = 0; Game.eRunLeft = sri(3, 5); }
@@ -478,18 +513,22 @@ function endlessRow(depth, prevGapC) {
       Game.gates.push({ y: depth * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: gapC, color: nc, taken: false, warned: false });
       Game.eColor = nc;
       Game.eRunLeft = sri(3, 6);
+      gated = true;
     }
     color = Game.eColor;
   }
   const row = { y: depth * PHYS.rowSpacing, gapC, gapH, color, reds: [] };
   row.golden = srp(0.06); // golden gap: 3x points
+  // v8: drifting gaps in deep endless — never on a gate row
+  row.drift = (!gated && depth >= 20 && srp(Math.min(0.35, 0.08 + depth * 0.004))) ? sr(0.25, 0.5) * (srp(0.5) ? 1 : -1) : 0;
+  row.gapC0 = row.gapC; row.driftT0 = Game.runTime || 0;
   if (depth > 8 && srp(Math.min(0.5, 0.1 + depth * 0.006))) {
     const rh = sr(0.28, 0.5);
     const rc = norm(gapC + Math.PI + sr(-0.9, 0.9));
     if (angDist(rc, gapC) > gapH + rh + 0.25) row.reds.push({ a0: rc - rh, a1: rc + rh });
   }
   if (depth > 2 && srp(0.08)) {
-    Game.powerups.push({ y: depth * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.4, 0.4)), kind: PU_KINDS[sri(0, 2)], taken: false });
+    Game.powerups.push({ y: depth * PHYS.rowSpacing - PHYS.rowSpacing / 2, localA: norm(gapC + sr(-0.4, 0.4)), kind: PU_KINDS[sri(0, 3)], taken: false });
   }
   return row;
 }
@@ -540,6 +579,15 @@ function startRun(playMode, level) {
     Game.depth = 13;
   }
   if (playMode !== 'daily') SRNG = null; // daily keeps its seed for tower extension
+  // v8: run clock, ghost marker, zones, stats
+  Game.runTime = 0;
+  Game.zone = -1;
+  Game.ghostPassed = false;
+  const br = Save.data.bestRows || { endless: 0, sudden: 0, daily: {} };
+  Game.ghostY = playMode === 'endless' ? (br.endless || 0) * PHYS.rowSpacing
+    : playMode === 'sudden' ? (br.sudden || 0) * PHYS.rowSpacing
+    : playMode === 'daily' ? ((br.daily || {})[dayStr()] || 0) * PHYS.rowSpacing : 0;
+  stat('runs');
   Game.rowIndex = -1;
   const first = Game.rows[0];
   Game.ball.y = first.y - 160;
@@ -585,15 +633,23 @@ function finishDeath() {
   const today = dayStr();
   const prev = Game.playMode === 'endless' ? Save.data.best.endless
     : Game.playMode === 'rush' ? Save.data.best.rush
+    : Game.playMode === 'sudden' ? Save.data.best.sudden
     : Game.playMode === 'daily' ? (Save.data.daily.best[today] || 0)
     : (Save.data.best.levels[Game.level] || 0);
   Game.newBest = Game.score > prev;
   if (Game.newBest) {
     if (Game.playMode === 'endless') Save.data.best.endless = Game.score;
     else if (Game.playMode === 'rush') Save.data.best.rush = Game.score;
+    else if (Game.playMode === 'sudden') Save.data.best.sudden = Game.score;
     else if (Game.playMode === 'daily') Save.data.daily.best[today] = Game.score;
     else Save.data.best.levels[Game.level] = Game.score;
   }
+  // v8: best depth per mode feeds the ghost marker
+  const rowsDone = Math.max(0, Game.rowIndex + 1);
+  const br = Save.data.bestRows || (Save.data.bestRows = { endless: 0, sudden: 0, daily: {} });
+  if (Game.playMode === 'endless' && rowsDone > (br.endless || 0)) br.endless = rowsDone;
+  else if (Game.playMode === 'sudden' && rowsDone > (br.sudden || 0)) br.sudden = rowsDone;
+  else if (Game.playMode === 'daily') { br.daily = br.daily || {}; if (rowsDone > (br.daily[today] || 0)) br.daily[today] = rowsDone; }
   Save.data.coins += Game.coinsRun;
   Save.save();
   awardXP(Math.floor(Game.score / 10) + Math.max(0, Game.rowIndex + 1));
@@ -687,6 +743,27 @@ function update(dt) {
 
   const b = G.ball;
   const prevY = b.y;
+  G.runTime += dt;
+  // v8: drifting gaps ride the run clock (deterministic per run)
+  for (const r of G.rows) if (r.drift) r.gapC = norm(r.gapC0 + r.drift * (G.runTime - (r.driftT0 || 0)));
+  // v8: bullet-time pickup sustains gentle slow-mo
+  if (G.puSlow > 0) {
+    G.puSlow -= dt;
+    if (G.slowT <= 0.05) { G.timeScale = 0.45; G.slowT = 0.12; }
+  }
+  // v8: depth zones + ghost marker (endless-like modes)
+  if (G.playMode === 'endless' || G.playMode === 'daily' || G.playMode === 'sudden') {
+    const z = Math.floor(b.y / (25 * PHYS.rowSpacing));
+    if (z !== G.zone) {
+      G.zone = z;
+      if (z > 0) { popup('🌀 ' + ZONES[z % ZONES.length].name, '#b388ff'); Sfx.tone(300, 0.3, 'triangle', 0.15, 600); }
+    }
+    if (!G.ghostPassed && G.ghostY > 0 && b.y > G.ghostY) {
+      G.ghostPassed = true;
+      popup('👻 GHOST PASSED!', '#9df');
+      burst(G.W / 2, G.ballScreenY, '#9df', 20);
+    }
+  }
   b.vy += PHYS.G * dt;
   b.vy = Math.min(b.vy, 2400);
   b.y += b.vy * dt;
@@ -731,6 +808,7 @@ function update(dt) {
             missionEv('repaint');
             Game.tRepaint++;
             if (Game.tRepaint >= 10) awardTrophy('repaint10');
+            stat('repaints');
             updateHUD(); // refresh the "you are this color" chip immediately
           }
         }
@@ -806,6 +884,7 @@ function triggerFever() {
   buzz(80);
   missionEv('fever');
   awardTrophy('fever1');
+  stat('fevers');
   for (let i = 0; i < 40; i++) burst(rand(0, G.W), rand(0, G.H * 0.5), '#ffd700', 22);
 }
 function scoreMult() {
@@ -817,7 +896,8 @@ function scoreMult() {
 const PU_META = {
   shield: { emoji: '🛡', name: 'SHIELD', color: '#7df9ff' },
   magnet: { emoji: '🧲', name: 'MAGNET', color: '#ff9d00' },
-  star: { emoji: '⭐', name: '2× STAR', color: '#ffe45e' }
+  star: { emoji: '⭐', name: '2× STAR', color: '#ffe45e' },
+  slow: { emoji: '⏳', name: 'BULLET-TIME', color: '#b388ff' }
 };
 function applyPowerup(kind) {
   const G = Game, meta = PU_META[kind];
@@ -832,6 +912,9 @@ function applyPowerup(kind) {
   } else if (kind === 'magnet') {
     G.puMagnet = 8;
     popup('🧲 MAGNET!', meta.color);
+  } else if (kind === 'slow') {
+    G.puSlow = 5;
+    popup('⏳ BULLET-TIME!', meta.color);
   } else {
     G.puStar = 10;
     popup('⭐ 2× POINTS!', meta.color);
@@ -868,6 +951,7 @@ function onCrossRow(row, i) {
       addFever(34); missionEv('perfect'); buzz([15, 30, 15]);
       Game.tPerfect++;
       if (Game.tPerfect >= 10) awardTrophy('perfect10');
+      stat('perfects');
     } else if (rel > row.gapH * 0.8) {
       pts += 15; popup('CLOSE! +' + pts, '#ff9d00');
       addFever(15);
@@ -885,8 +969,10 @@ function onCrossRow(row, i) {
       Sfx.power();
       burst(G.W / 2, row.y - G.camY, '#ffd700', 24);
     }
+    if (G.playMode === 'sudden') pts *= 3; // sudden death: triple stakes
     G.score += pts;
     G.rowIndex = Math.max(G.rowIndex, i);
+    stat('rows');
     Sfx.bounce(G.streak);
     buzz(10);
     burst(G.W / 2, row.y - G.camY, PALETTE[b.color].main, 8);
@@ -1071,6 +1157,13 @@ function drawRow(row) {
       const ga = 0.30 + 0.20 * Math.sin(Game.time * 6);
       strokeArc(a0, a1, sy, `rgba(255,215,0,${ga.toFixed(3)})`, RING * 0.5, 16);
     }
+  }
+  // v8: drifting gap motion trail — telegraphs which way the gap is moving
+  if (row.drift) {
+    const dir = row.drift > 0 ? 1 : -1;
+    ctx.globalAlpha = 0.22;
+    strokeArc(gapW - dir * 0.85, gapW - dir * 0.1, sy, base, RING * 0.55, 10);
+    ctx.globalAlpha = 1;
   }
   // glowing caps on the gap edges so the opening reads at speed
   // (skipped on the near-full-circle finish ring)
@@ -1266,6 +1359,27 @@ function render() {
   for (const gt of G.gates) drawGate(gt);
   for (const c of G.coins) drawCoin(c);
   for (const p of G.powerups) drawPowerup(p);
+  // v8: ghost marker — your best depth, chase it
+  if ((G.playMode === 'endless' || G.playMode === 'daily' || G.playMode === 'sudden') && G.ghostY > 0) {
+    const gy = G.ghostY - G.camY;
+    if (gy > -20 && gy < G.H + 20) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(153,221,255,.7)'; ctx.lineWidth = 2; ctx.setLineDash([12, 10]);
+      ctx.shadowBlur = 10; ctx.shadowColor = '#9df';
+      ctx.beginPath(); ctx.moveTo(20, gy); ctx.lineTo(G.W - 20, gy); ctx.stroke();
+      ctx.setLineDash([]); ctx.shadowBlur = 0;
+      ctx.fillStyle = '#9df'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+      ctx.fillText('👻 BEST', 24, gy - 8);
+      ctx.restore();
+    }
+  }
+  // v8: depth zone tint wash
+  if (G.playMode !== 'levels' && G.zone > 0) {
+    ctx.globalAlpha = 0.10;
+    ctx.fillStyle = ZONES[G.zone % ZONES.length].tint;
+    ctx.fillRect(0, 0, G.W, G.H);
+    ctx.globalAlpha = 1;
+  }
   drawBall();
   // fever gold vignette while active
   if (G.feverT > 0) {
@@ -1334,7 +1448,7 @@ document.addEventListener('visibilitychange', () => {
 
 /* ---------------- UI ---------------- */
 const $ = id => document.getElementById(id);
-const screens = ['menu', 'levels', 'shop', 'howto', 'pause', 'gameover', 'leveldone', 'adcard', 'trophies', 'login'];
+const screens = ['menu', 'levels', 'shop', 'howto', 'pause', 'gameover', 'leveldone', 'adcard', 'trophies', 'login', 'stats'];
 function showScreen(id) {
   for (const s of screens) $(s).classList.toggle('hidden', s !== id);
 }
@@ -1350,6 +1464,7 @@ function updateHUD() {
   const rows = Math.max(0, Game.rowIndex + 1) + ' ROWS';
   $('hud-level').textContent = Game.playMode === 'endless' ? 'ENDLESS · ' + rows
     : Game.playMode === 'rush' ? 'RUSH · ' + fmtTime(Game.timeLeft)
+    : Game.playMode === 'sudden' ? '💀 SUDDEN · ' + rows
     : Game.playMode === 'daily' ? '📅 DAILY · ' + rows + ' · 🔥' + Save.data.daily.streak
     : 'LEVEL ' + Game.level;
   $('coin-count').textContent = Save.data.coins;
@@ -1365,7 +1480,7 @@ function updateHUD() {
 }
 
 function refreshMenu() {
-  const best = Math.max(Save.data.best.endless, Save.data.best.rush || 0, ...Object.values(Save.data.best.levels), ...Object.values(Save.data.daily.best), 0);
+  const best = Math.max(Save.data.best.endless, Save.data.best.rush || 0, Save.data.best.sudden || 0, ...Object.values(Save.data.best.levels), ...Object.values(Save.data.daily.best), 0);
   $('menu-best').textContent = best;
   $('menu-coins').textContent = Save.data.coins;
   // daily button sub: streak + today's best
@@ -1407,6 +1522,27 @@ function renderTrophies() {
   }).join('');
 }
 
+function fmtPlayTime(s) {
+  s = Math.floor(s || 0);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+}
+function renderStats() {
+  const s = ensureStats();
+  const rows = [
+    ['Runs played', s.runs],
+    ['Rows threaded', (s.rows || 0).toLocaleString()],
+    ['PERFECT gaps', (s.perfects || 0).toLocaleString()],
+    ['Repaints', (s.repaints || 0).toLocaleString()],
+    ['FEVERS triggered', s.fevers || 0],
+    ['Time played', fmtPlayTime(s.playTime)],
+    ['Player XP', (Save.data.xp || 0).toLocaleString()],
+    ['Trophies', Save.data.trophies.length + '/' + TROPHIES.length]
+  ];
+  $('stats-list').innerHTML = rows.map(([k, v]) =>
+    `<div class="stat-row"><span>${k}</span><b>${v}</b></div>`).join('');
+}
+
 function renderLogin() {
   const l = Save.data.login;
   $('login-day').textContent = Math.min(l.streak, 7);
@@ -1431,6 +1567,7 @@ function armBoost(kind) {
 function goMenu() {
   Game.mode = 'menu';
   hud(false);
+  Save.save(); // flush playTime + stats
   refreshMenu();
   showScreen('menu');
 }
@@ -1443,14 +1580,18 @@ function showGameOver() {
   $('go-score').textContent = Game.score;
   const best = Game.playMode === 'endless' ? Save.data.best.endless
     : Game.playMode === 'rush' ? Save.data.best.rush
+    : Game.playMode === 'sudden' ? Save.data.best.sudden
     : Game.playMode === 'daily' ? (Save.data.daily.best[dayStr()] || 0)
     : (Save.data.best.levels[Game.level] || 0);
   $('go-best').textContent = best;
-  $('go-mode').textContent = Game.playMode === 'daily' ? '📅 DAILY · 🔥' + Save.data.daily.streak + ' DAY STREAK' : '';
+  $('go-mode').textContent = Game.playMode === 'daily' ? '📅 DAILY · 🔥' + Save.data.daily.streak + ' DAY STREAK'
+    : Game.playMode === 'sudden' ? '💀 SUDDEN DEATH · 3× SCORE' : '';
   $('go-coins').textContent = '+' + Game.coinsRun;
   $('go-newbest').classList.toggle('hidden', !Game.newBest);
-  $('btn-revive').disabled = Game.revived;
-  $('btn-revive').style.display = Game.revived ? 'none' : 'block';
+  // sudden death: no revive, ever
+  const noRevive = Game.revived || Game.playMode === 'sudden';
+  $('btn-revive').disabled = noRevive;
+  $('btn-revive').style.display = noRevive ? 'none' : 'block';
   hud(false);
   showScreen('gameover');
 }
@@ -1566,7 +1707,10 @@ function wire() {
   $('btn-levels').onclick = () => { Sfx.init(); Sfx.click(); renderLevels(); showScreen('levels'); };
   $('btn-endless').onclick = () => { Sfx.init(); Sfx.click(); startRun('endless'); };
   $('btn-rush').onclick = () => { Sfx.init(); Sfx.click(); startRun('rush'); };
+  $('btn-sudden').onclick = () => { Sfx.init(); Sfx.click(); startRun('sudden'); };
   $('btn-daily').onclick = () => { Sfx.init(); Sfx.click(); startRun('daily'); };
+  $('btn-stats').onclick = () => { Sfx.click(); renderStats(); showScreen('stats'); };
+  $('btn-stats-back').onclick = () => { Sfx.click(); goMenu(); };
   $('rival-dismiss').onclick = (e) => { e.stopPropagation(); Sfx.click(); Game.rival._dismissed = true; refreshMenu(); };
   $('btn-share').onclick = () => {
     Sfx.click();
@@ -1631,6 +1775,7 @@ function loop(now) {
   lastFrame = now;
   if (Game.mode === 'playing' || Game.mode === 'dying') {
     update(rdt * Game.timeScale);
+    if (Game.mode === 'playing') stat('playTime', rdt); // career clock (saved on menu/death)
     if (Game.playMode === 'rush' && Game.mode === 'playing') {
       Game.timeLeft -= rdt;
       const s = Math.ceil(Game.timeLeft);
@@ -1652,6 +1797,7 @@ function loop(now) {
         if (Game.puShield) html += '<span title="Shield">🛡</span>';
         if (Game.puMagnet > 0) html += '<span>🧲' + Math.ceil(Game.puMagnet) + '</span>';
         if (Game.puStar > 0) html += '<span>⭐' + Math.ceil(Game.puStar) + '</span>';
+        if (Game.puSlow > 0) html += '<span>⏳' + Math.ceil(Game.puSlow) + '</span>';
         if (html !== pi._last) { pi.innerHTML = html; pi._last = html; }
       }
     }
